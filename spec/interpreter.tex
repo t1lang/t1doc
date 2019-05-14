@@ -1,0 +1,1080 @@
+\section{Interpretation Syntax}
+
+\emph{Interpretation} is the process during which source code is
+translated into instructions to execute. The source code may itself
+trigger the immediate execution of the functions which it just defined;
+they then run in the context of the interpreter. \emph{Compilation} is a
+separate step that may optionally occur when triggered by the
+interpreted code, or implicitly at the end of interpretation, or not at
+all; this is covered in a later section.
+
+The source code syntax is defined in terms of interpreter behaviour.
+Like in Forth, there is no formal syntax that is parsed into a tree;
+instead, the main interpreter is a simple loop, which is then extended
+by \emph{immediate functions}, which are functions that are executed
+immediately when their name is encountered, and interact with the source
+stream to implement all extra syntax. User code can define its own
+immediate functions, and thereby process the source code in arbitrarily
+extensible ways.
+
+\subsection{Function Building}
+
+At any point, the interpreter is \emph{building a function}, i.e.
+accumulating instructions into an as-yet incomplete function. Building
+contexts nest: at any time, a new building context may be opened; the
+previous one will be restored when the new context is closed. Closing
+the context yields the function.
+
+Some building contexts are said to be \emph{automatic}: whenever some
+instructions have been accumulated in an automatic context and there is
+no outstanding flow control structure, the context is closed (which
+creates the corresponding function), cleared, and reopened; the function
+which was just created is then executed.
+
+For a non-automatic building context, the new function is registered as
+soon as it is created. For an automatic building context, the new
+function is not registered and does not have a name; it is executed
+right away, then discarded. Note that the automatic context is cleared
+and reopened \emph{before} running the newly created function: this
+allows that function to populate the building context with new function
+elements.
+
+\begin{rationale}
+In Forth, the interactive system has two states, ``interpretation'' and
+``compilation''. In interpretation mode, typed words are executed
+immediately, while in compilation mode, they are recorded in the
+currently-built function (``word'', in Forth terminology). The
+interpretation/compilation duality complicates the description of the
+language, in that many words have different semantics depending on the
+current state. In plain Forth (not counting some non-standard
+extensions), states do not stack, and you cannot define a sub-function
+within a function. Moreover, flow control structures are not available
+in the interpreter.
+
+In T1, the term ``compilation'' is reserved for a distinct process,
+described later on. Thus, ``interpretation'' is used for all activities
+related to source code processing. The automatic building contexts are
+functionally equivalent to the Forth ``interpreter'', except that they
+allow all flow control structures, and do not require special semantics.
+\end{rationale}
+
+Functions are made of the following formal instructions:
+\begin{itemize}
+
+    \item \textsc{call}: invoke a function with a specific name
+    (normally a qualified name token).
+
+    \item \textsc{const}: push on the stack a given value (a reference).
+
+    \item \textsc{getlocal}: push on the stack the value currently held in
+    a specified local variable.
+
+    \item \textsc{getlocalindex}: push on the stack the value currently held
+    in a specified local variable (among an array of locals, by index).
+
+    \item \textsc{putlocal}: pop a value from the stack and write it into
+    a specified local variable.
+
+    \item \textsc{putlocalindex}: pop a value from the stack and write
+    it into a specified local variable (among an array of locals, by
+    index).
+
+    \item \textsc{reflocal}: push on the stack a reference to a
+    locally allocated instance.
+
+    \item \textsc{reflocalindex}: push on the stack a reference to a
+    locally allocated instance (among an array of locally allocated
+    instances, by index).
+
+    \item \textsc{ret}: exit the current function, returning control to
+    the caller.
+
+    \item \textsc{jump}: unconditional jump to another point in the
+    sequence of instructions (within the same function).
+
+    \item \textsc{jumpif}: conditional jump to another point in the
+    sequence of instructions: the top-of-stack is popped and must be
+    a boolean value; the jump is taken if that value is \verb|true|.
+
+    \item \textsc{jumpifnot}: conditional jump to another point in the
+    sequence of instructions: the top-of-stack is popped and must be
+    a boolean value; the jump is taken if that value is \verb|false|.
+
+\end{itemize}
+
+Local elements are statically indexed, i.e. which local variable or
+instance, within the current activation context, is used in a
+\textsc{putlocal}, \textsc{getlocal} or \textsc{reflocal}, is a question
+which is decided at the time the instruction is added to the currently
+built function. For \textsc{getlocalindex}, \textsc{putlocalindex} and
+\textsc{reflocalindex}, the location and length of the sequence of local
+variables or instances are also decided at function building time; the
+index is popped from the stack at runtime, and compared with these
+bounds to prevent out-of-bounds accesses.
+
+The \textsc{jump}, \textsc{jumpif} and \textsc{jumpifnot} opcodes are
+together called the ``jump opcodes''.
+
+\subsection{The Interpreter Loop}\label{syntax:loop}
+
+The interpreter loop is described in pseudo-code as follows:
+\begin{enumerate}
+
+    \item \label{interp:start}Read the next token from the source code
+    stream. If there is no next token (end of source stream), exit (the
+    interpretation process is finished).
+
+    \item \label{interp:const}If the token is a numerical constant or a
+    literal string, then add a \textsc{const} opcode to the current
+    function for that value (for character strings, this implies
+    creating the instance that contains that string, and using the
+    reference to that new instance as value); then jump to
+    step~\ref{interp:auto}.
+
+    \item \label{interp:name}The token is a name. If the name is
+    unqualified:
+    \begin{enumerate}
+
+        \item If the name matches that of an accessor for a local
+        variable or locally allocated instance, then the corresponding
+        opcode (\textsc{getlocal}, \textsc{putlocal}...) is added to the
+        current function; then jump to step~\ref{interp:auto}.
+
+        \item If there is a currently defined alias for that name,
+        then convert the name into the qualified name to which the
+        alias points.
+
+        \item Otherwise, convert the name to a qualified name by
+        adjoining the current namespace.
+
+    \end{enumerate}
+
+    \item \label{interp:immediate}The name is qualified. If there
+    is a currently registered immediate function under that name,
+    invoke it immediately, then jump to step ~\ref{interp:auto}.
+
+    \item \label{interp:call}Add a \textsc{call} opcode to the
+    current function, for the qualified name.
+
+    \item \label{interp:auto}While all of the following hold:
+    \begin{itemize}
+
+        \item the current building context is automatic;
+
+        \item the current building context is not empty;
+
+        \item the current context does not have outsanding flow
+        control structures;
+
+    \end{itemize}
+    finalize the current context into a function $f$, reinitialize the
+    context into a new empty function builder, and execute the function
+    $f$.
+
+    \item \label{interp:loop}Jump to step~\ref{interp:start}.
+
+\end{enumerate}
+
+For this description, in step~\ref{interp:start}, we assume that the
+source code is a single input stream. In practice, the interpreter will
+handle several successive source files, one at a time, with a new
+interpreter loop for each file. Building contexts are not conserved
+across files, so any function whose building has started must be
+finished by the end of the same file.
+
+Numerical constants are the two boolean values (\verb|true| and
+\verb|false|), character constants, and number constants. Character
+constants are words that start with a backquote character
+(``\verb|`|''), while number constants start with an ASCII digit, or a
+plus or minus sign followed by an ASCII digit. Literal strings start
+with a double-quote character (``\verb|"|''). The syntax for numerical
+constants and literal strings was described in section~\ref{lexing}.
+
+\begin{rationale}
+\textsf{\textbf{TODO:}} The constant parsing process will be made
+pluggable, so that new arbitrary constant formats may be defined,
+normally distinguished by suffix. For instance, when ``big integers''
+are implemented, they will use numerical constants with a ``\verb|z|''
+suffix. Similarly, floating-point constants will use a dot symbol
+(``\verb|.|'') and the usual exponent notation. In all generality, there
+will be a sequence of registered functions that are invoked in due order
+until one returns that it could understand the format; the last one will
+apply the rules for integer types.
+\end{rationale}
+
+In step~\ref{interp:name}, a \textsc{putlocal} into local variable
+\verb|x| is obtained with the name ``\verb|->x|'', without a space
+between ``\verb|->|'' and ``\verb|x|''. If a space separates both parts,
+then a \textsc{putlocal} will also be obtained through a much different
+road, the name ``\verb|std::->|'' being itself an immediate function
+that implements an extended syntax for writing into local variables.
+
+In step~\ref{interp:immediate}, the ``immediate'' flag is an extra
+information attached to the function when registered. A normal
+\textsc{call} opcode that targets an immediate function name (i.e.
+adding a call to the immediate function in the currently built function,
+rather than calling the immediate function immediately) can be obtained
+with the ``quoting function'' (\verb|'|, described later).
+
+In step~\ref{interp:auto}, a loop is used because execution of the
+current function may again add opcodes to the current automatic context.
+Note that the context is cleared and reinitialized after finalizing the
+current function, but before calling it, precisely so that new opcodes
+may be added to the context without being discarded. The call to the
+built function is direct and does not use the name and lookup process
+(the function is not actually registered).
+
+The meaning of ``outstanding flow control'' will be explained in
+section~\ref{syntax:flow}.
+
+\subsection{Nested Interpreter}\label{syntax:nested}
+
+While a given interpreter loop can work over nested building contexts,
+a common pattern in the T1 syntactic constructions is the use of a
+nested interpreter loop. This is normally triggered by the opening
+parenthesis token (``\verb|(|''):
+\begin{itemize}
+
+    \item A new builder context is created and opened. This is an
+    automatic context, i.e. with immediate execution of instructions.
+
+    \item A new, empty data stack is created.
+
+    \item The nested loop runs until it reaches a closing parenthesis
+    token (``\verb|)|''), using the new data stack. If the end of the
+    source stream is reached before obtaining that closing parenthesis,
+    an error is raised.
+
+    \item When the nested loop exits, the caller obtains the contents of
+    the data stack which was created for the nested loop. If, at that
+    point, the current builder context is not the automatic context that
+    was created for the nested interpreter, or that context is not empty
+    (because of an outstanding flow control structure), then an error is
+    raised. Otherwise, that context is removed, and the previous
+    context, which was active when the opening parenthesis was
+    encountered, is restored.
+
+\end{itemize}
+
+One case is when the interpreter loop encounters the opening paranthesis
+in its normal processing loop, at step~\ref{interp:name} (specifically,
+when after applying aliases, the qualified name is ``\verb|std::(|'').
+In that case, a nested interpreter loop is launched, in the conditions
+described above. When that loop exits, the contents of its dedicated
+data stack are used for that many \textsc{const} opcodes added to the
+current builder context.
+
+Other uses of a similar construction are for function and type
+declarations.
+
+\subsection{Function Declaration}
+
+To declare (and define) a new function, the ``\verb|:|'' function is
+used. Here is an example:
+\begin{verbatim}
+    : fact <export> (u64)
+        # ...
+\end{verbatim}
+The behaviour of ``\verb|:|'' is as follows:
+\begin{enumerate}
+
+    \item Get the next token from the source stream; if it is a literal
+    string, then the string contents are the name under which the
+    function shall be registered; otherwise, it shall be a name token.
+    In the latter case, if the name is unqualified, then it is converted
+    to a qualified name:
+    \begin{itemize}
+
+        \item If there is a defined alias for the name, then the
+        qualified name to which the alias points is used.
+
+        \item Otherwise, a qualified name is made by adjoining the current
+        namespace to the parsed raw name.
+
+    \end{itemize}
+
+    \item After the name may follow one or several of the following
+    qualifiers:
+    \begin{itemize}
+
+        \item ``\verb|<export>|'': the new function will be added to the
+        export list of the current namespace (see the
+        section~\ref{syntax:namespace} for details).
+
+        \item ``\verb|<immediate>|'': the new function will be registered
+        as immediate when finished building.
+
+    \end{itemize}
+    Order of appearance is not significant for qualifiers; if the same
+    qualifier is applied several times, this has the same effect as
+    a single instance of the qualifier. Unknown qualifiers trigger an
+    error.
+
+    \item An opening parenthesis (``\verb|(|'') terminates the list
+    of qualifiers, and starts a new, nested, automatic building context,
+    as described in section~\ref{syntax:nested}. The stack contents upon
+    exit of the nested interpreter loop are then used as the list of
+    parameter types for registration of the new function. If any of the
+    values is not a type (an instance of ``\verb|std::type|''), then
+    an error is raised.
+
+    If the new function is immediate, then the list of types shall be
+    empty (immediate functions are registered with an empty parameter
+    list); otherwise, an error is raised.
+
+    \item A new building context is created for the new function. The
+    function name (qualified), flags (exported, immediate...), and
+    parameter types are stored in that context, and will be used when
+    the context is closed.
+
+\end{enumerate}
+
+Since a new building context was created, subsequent actions of the
+interpreter loop will add opcodes to that builder, hence contributing to
+the code of that new function. The new function is not registered until
+its building context is finalized. This is normally triggered by the
+immediate function ``\verb|;|''.
+
+The ``\verb|:|'' function is immediate, thus allowing the declaration of
+a new function while another function is being built (this contrasts
+with Forth, where nested function declarations are not supported, and
+``\verb|:|'' is not immediate, since it is supposed to be invoked only
+from the interpreter). These nested functions do not have any scoping
+hierarchy or similar features: a nested function has the same visibility
+as any other, and it cannot access the local variables and instances of
+the outer function. This feature is mostly a syntactic convenience.
+
+\subsection{Flow Control}\label{syntax:flow}
+
+The jump opcodes are added with dedicated immediate functions, that
+use a \emph{control-flow stack} which is managed by the builder context.
+That stack is separate from the data stack. It contains ``origins''
+and ``destinations'':
+\begin{itemize}
+
+    \item An \emph{origin} represents a jump opcode that has been added
+    to the current builder, but still needs to be resolved to its
+    destination.
+
+    \item A \emph{destination} represents an opcode of any type that may
+    become the target of a jump opcode.
+
+\end{itemize}
+
+\begin{rationale}
+The control-flow stack is a powerful concept imported from Forth. In
+Forth, it is implementation-dependent whether the control-flow stack
+uses the data stack, or is separate; in T1, the control-flow is
+separate and bound to the builder context, which avoids any issue with
+nested function builders.
+\end{rationale}
+
+The concept behind the control-flow stack is that a jump opcode is
+first added, then resolved; resolution occurs either when the target
+destination becomes known, for a \emph{forward jump} (the target is
+beyond the jump, and thus added later on), or when the jump opcode
+itself is added, for a \emph{backward jump} (the target is before the
+jump, and already present at the time the jump opcode is added):
+\begin{itemize}
+
+    \item An origin is pushed when adding a forward jump.
+
+    \item An origin is consumed when adding the target for a forward
+    jump.
+
+    \item A destination is pushed when adding the target for a backward
+    jump.
+
+    \item A destination is consumed when adding a backward jump.
+
+\end{itemize}
+At any time, the builder has a \emph{current address}, which designates
+the next opcode that will be added. Thus, whenever an origin or
+destination is pushed, it designates the opcode that will be added next.
+
+Consider for instance the classic ``if'' construction. As per the Forth
+tradition, it syntactically looks as follows:
+\begin{verbatim}
+    ... # some code that pushes a boolean value
+    if
+        ... # executed if the boolean is true
+    else
+        ... # executed if the boolean is false
+    then
+\end{verbatim}
+This code has two forward jumps:
+\begin{itemize}
+
+    \item a forward \textsc{jumpifnot} at the position of the
+    ``\verb|if|'', to consume the boolean value and skip the first code
+    chunk if the boolean falue is \verb|false|; that jump targets the
+    second code chunk, just after the ``\verb|else|'';
+
+    \item a forward \textsc{jump} opcode at the position of the
+    ``\verb|else|'', so that after execution of the first code chunk
+    (when the boolean was \verb|true| and the \textsc{jumpifnot} was not
+    taken), execution skips to the code that follows the final
+    ``\verb|then|''.
+
+\end{itemize}
+
+The behaviour of the three immediate functions is as follows:
+\begin{itemize}
+
+    \item ``\verb|if|'': push the current address as an origin, and
+    add a \textsc{jumpifnot} opcode (thus, the ``origin'' qualifies
+    that newly added opcode).
+
+    \item ``\verb|else|'': push the current address as an origin,
+    add a \textsc{jump} opcode, swap the two top elements of the
+    control-flow stack, and pop the top element (it should be an
+    origin) to resolve it against the current address.
+
+    \item ``\verb|then|'': pop the top control-flow stack element
+    (it should be an origin) to resolve it against the current address.
+
+\end{itemize}
+Thus, the ``\verb|if|'' adds an as-yet-unresolved forward jump, which
+is pushed as an origin on the stack; ``\verb|else|'' adds another
+forward jump, also pushed as an origin on the stack, and resolves the
+first jump to the opcode that will immediately follow the second
+forward jump; ``\verb|then|'' resolves the second jump opcode.
+
+Since origins and destinations are organized as a stack, this naturally
+supports nesting flow structures.
+
+A builder is said to have \emph{outstanding flow control structures}
+when its control-flow stack is not empty. In such a case, an automatic
+builder does not finalizes itself.
+
+\begin{rationale}
+The use of the control-flow stack to decide whether an automatic builder
+context finalizes and executes the current function or not, allows the
+use of flow control structures in code meant for immediate execution.
+This contrasts with Forth, where (normally) you cannot use flow control
+in ``interpreter mode''.
+\end{rationale}
+
+When a function builder is finalized, its control-flow stack must be
+empty, otherwise an error is raised. Also, all jump opcodes must have
+been resolved. Normally, resolution is done by consuming items on the
+control-flow stack; however, since items on the control-flow stack can
+be explicitly duplicated and dropped, the two conditions ``stack is
+empty'' and ``all jumps are resolved'' are not necessarily synonymous.
+
+All functions end with an implicit \textsc{ret} opcode. Thus, if the
+current address was used to resolve a forward jump, but no opcode was
+added afterwards, the jump targets that implicit \textsc{ret}.
+
+\subsection{Type Declarations}\label{syntax:types}
+
+A structure type is defined with the \verb|std::struct| immediate
+function. This function parses the new structure name, and then
+the structure fields and embedded sub-structures. Here is an
+example of such a declaration:
+\begin{verbatim}
+    struct foo <export>
+        x   int              # reference field of type std::int
+        vx  12 u8            # embedded array of 12 std::u8 values
+        p   bar              # reference field of type def::bar
+        q   && bar           # embedded structure of type def::bar
+            && qux           # def::foo extends def::qux
+        a   (i32 array)      # reference field of type (std::i32 std::array)
+        b   && 5 (int list)  # embedded array of 5 instances of (std::int std::list)
+    end
+\end{verbatim}
+The line breaks and indentation are not significant, and have been set
+for clarity of the source code only. The comments (starting with
+``\verb|#|'') are similarly not significant.
+
+The example above illustrates the characteristics of the type declaration
+syntax:
+\begin{itemize}
+
+    \item Elements are declared with the element name, followed by its
+    type.
+
+    \item If an integer constant lies between the element name and the
+    type, then the element is an embedded array.
+
+    \item The special name ``\verb|&&|'' is used to embed sub-structures.
+    It can be combined with an integer for an embedded array of embedded
+    sub-structures.
+
+    \item If the element name is missing, and the ``\verb|&&|'' special
+    name appears where a name was expected, then this is a type extension,
+    which combines embedding and sub-typing. The name of the embedded
+    class is also used as the element name.
+
+    \item When an element type is expected, an opening parenthesis can be
+    used, to create a nested interpreter loop that evaluates to the
+    \verb|std::type| instance to use.
+
+\end{itemize}
+
+The behaviour of ``\verb|std::struct|'' is as follows:
+\begin{enumerate}
+
+    \item Parse the next token from the stream. If it is a literal
+    string, then the string contents are the type name; otherwise, the
+    next token shall be a name. In the latter case, if the name is not
+    qualified, then it is converted to a qualified name by applying the
+    currently defined aliases, or adding the current namespace if none
+    of the current aliases applies.
+
+    \item Get the type that currently has the specified name. If there
+    is no such type, a new structure type is declared and used. If the
+    type exists but is closed, then an error is raised; otherwise, the
+    existing type will be used.
+
+    \item If the next token from the stream is the name
+    ``\verb|<export>|'', then the type function (the function that
+    returns the ``\verb|std::type|'' instance corresponding to the new
+    type) will be marked as exported (see section~\ref{syntax:namespace}
+    for details); otherwise, the next token is pushed back onto the
+    stream, to be read again at the next step.
+
+    \item \label{struct:loop}Parse the next token $t$ from the stream. If
+    that token $t$ is the name ``\verb|end|'', then the type declaration
+    stops, and the immediate function ``\verb|std::struct|'' returns.
+    Note that the type is \emph{not} closed.
+
+    \item If the token $t$ is the name ``\verb|&&|'', then this is
+    an extension:
+    \begin{enumerate}
+
+        \item A type reference is parsed. This must be a single type
+        instance $T$, with no integer count. Type reference parsing is
+        described later.
+
+        \item A new element is added to the current structure, using the
+        type $T$, with the name of $T$ as element name. Then go to
+        step~\ref{struct:loop}.
+
+    \end{enumerate}
+
+    \item The token $t$ must be a name. If that name is unqualified,
+    then it is converted to a qualified name $n$ by using the current
+    aliases (if applicable), or the current namespace. Otherwise, $n$ is
+    set to be equal to $t$.
+
+    \item If the next token is the name ``\verb|&&|'', then that token
+    is parsed (i.e. discarded from the input stream), and the new
+    element will be an embedded sub-structure, or an embedded array of
+    embedded sub-structures; otherwise, the next token is left on the
+    input stream for the next step, and the element will be a field or
+    an embedded array of fields.
+
+    \item A type reference is parsed. This may be either a type instance
+    $T$, or a pair consisting of an integer value $x$ followed by a type
+    instance $T$. In the latter case, an embedded array of $x$ elements
+    is defined; the value $x$ must be greater than zero (otherwise, an
+    error is raised). The type $T$ applies to the new element (as type
+    of the field, or the embedded structure, or the embedded array
+    element values or embedded structures, depending on the presence of
+    the integer $x$ and the initial ``\verb|&&|'' token).
+
+    \item Go to step~\ref{struct:loop}.
+
+\end{enumerate}
+
+\emph{Parsing a type reference} is a sub-process that behaves as
+follows:
+\begin{enumerate}
+
+    \item Start with an empty list of values. ``Adding to the list'' means
+    appending a new value at the end of the list.
+
+    \item \label{parsetype:loop}Get the next token $t$. If that token
+    is a numerical constant, then it shall be of type ``\verb|std::int|''
+    (otherwise, an error is raised); that value is added to the list,
+    then the process loops to step~\ref{parsetype:loop}.
+
+    \item If $t$ is an opening parenthesis (``\verb|(|''), then a
+    nested interpreter loop is executed, as specified in
+    section~\ref{syntax:nested}; the output contents of the data stack
+    of that loop are then examined:
+    \begin{itemize}
+
+        \item If the nested stack contains only \verb|std::int| values,
+        then these values are added to the list in stack order
+        (top-of-stack is added last); then loop to
+        step~\ref{parsetype:loop}.
+
+        \item If the nested stack contains zero, one or more
+        \verb|std::int| values, followed by a single \verb|std::type|
+        instance (as the top-of-stack), then these values are added to
+        the list in stack order; then jump to step~\ref{parsetype:exit}.
+
+        \item Otherwise, the stack contents are not valid, and an
+        error is raised.
+
+    \end{itemize}
+
+    \item If $t$ is a literal string, then the string contents are used
+    as type name $n$. Otherwise, $t$ shall be a name; that name is used
+    for $n$ (converted to a qualified name with the current aliases and
+    namespace, if necessary).
+
+    \item The type of name $n$ is added to the list. If that type does
+    not exist, then a new empty, open structure of name $n$ is created,
+    and its \verb|std::type| instance is used.
+
+    \item \label{parsetype:exit}The list contents are returned.
+
+\end{enumerate}
+
+By construction, the parsing of a type reference can only return a
+\verb|std::type| instance, preceded by zero, one or more \verb|std::int|
+values.
+
+\begin{rationale}
+\textsf{\textbf{TODO:}} Allow multi-dimensional arrays. The type parsing
+mechanism can return more than one integer value. It is unclear whether
+multidimensional arrays are really a good idea, though: they are merely
+a syntactic shortcut for computing the index as a multiplication and an
+addition, since all dimensions are fixed (no ``jagged arrays''). Defining
+multi-dimensional arrays would require making special accessor names,
+e.g. ``\verb|v@@|'' to make it syntactically explicit that two index
+values are expected.
+\end{rationale}
+
+\begin{rationale}
+The type parsing mechanism allows the use of generics. Consider the
+two following element declarations, which have similar effects:
+\begin{verbatim}
+    x  "(std::u8 std::list)"
+    y  (u8 list)
+\end{verbatim}
+In the first case (element \verb|x|), the explicit name of the
+``growable array of bytes'' type is used, while in the second case
+(element \verb|y|), a nested interpreter loop is used; that loop will
+first call the \verb|std::u8| function (which pushes the
+\verb|std::type| instance of unsigned integers modulo $2^8$), then call
+the \verb|std::list| function, which will use the \verb|std::type|
+instance on the stack as parameter for creating the \verb|std::type|
+instance for the growable array of bytes.
+
+The second syntax is easier to use, because the nested interpreter loop
+mechanics will include the automatic qualification (``\verb|u8|'' is
+converted to ``\verb|std::u8|'' as per the aliases imported from
+namespace \verb|std|) and be lenient about whitespace, whereas the use
+of the literal string for \verb|x| requires using the exact type name.
+
+Moreover, using the nested interpreter loop is also more robust: the
+call to \verb|std::list| creates the type on demand, and, in particular,
+also creates and registers all functions that operate on growable
+vectors of bytes. The syntax with a literal string does not perform
+this task, and thus relies on other constructions in the source code to
+ensure that the said functions exist.
+\end{rationale}
+
+\subsection{Local Variables And Instances}
+
+\emph{Local variables} are slots that can receive a value (i.e. a
+reference) and that exist within the activation context of a function;
+they disappear when the function exits. Similarly, \emph{local instances}
+are object instances that are allocated when a function activation
+context is created, and meant to be released when the function exits.
+
+The generic syntax for creating local variables and instances mimics
+that of the declaration of types. It starts with the \verb|local|
+immediate function:
+\begin{verbatim}
+    local
+        x   int              # reference field of type std::int
+        vx  12 u8            # embedded array of 12 std::u8 values
+        p   bar              # reference field of type def::bar
+        q   && bar           # embedded structure of type def::bar
+        a   (i32 array)      # reference field of type (std::i32 std::array)
+        b   && 5 (int list)  # embedded array of 5 instances of (std::int std::list)
+    end
+\end{verbatim}
+
+For each named element, \emph{accessor names} are created. These names
+are recognized by the interpreter loop (see section~\ref{syntax:loop})
+when building the function, and converted to the appropriate opcodes.
+Such names do not exist beyond function building, are not bound to any
+namespace, and cannot be aliases (they are matched before applying
+aliases and namespaces). These names are the following:
+\begin{itemize}
+
+    \item For a field of name \verb|x|:
+    \begin{itemize}
+
+        \item \verb|x| returns the current contents of the field.
+
+        \item \verb|->x| writes a value into the field.
+
+    \end{itemize}
+
+    \item For an embedded structure of name \verb|x|:
+    \begin{itemize}
+
+        \item \verb|x&| returns a reference to the structure.
+
+    \end{itemize}
+
+    \item For an embedded array of references of name \verb|x|:
+    \begin{itemize}
+
+        \item \verb|x@| reads a reference value, using an index (of type
+        \verb|std::int|).
+
+        \item \verb|->x@| writes a reference value, using an index (of type
+        \verb|std::int|).
+
+        \item \verb|x*| initializes an array instance (of the right type)
+        to provide an array view of the array.
+
+    \end{itemize}
+
+    \item For an embedded array of embedded structures of name \verb|x|:
+    \begin{itemize}
+
+        \item \verb|x@&| returns a reference to one of the embedded
+        structures, using an index (of type \verb|std::int|).
+
+        \item \verb|x*| initializes an array instance (of the right type)
+        to provide an array view of the array.
+
+    \end{itemize}
+
+\end{itemize}
+
+Several \verb|local| declarations may exist within a function, provided
+that no local name is reused within that function.
+
+There is no smaller scope than a function. When a local variable or
+instance is declared, its name becomes usable until the end of the
+function building, but the corresponding variable or instance is created
+when the function activation context is created, i.e. upon function
+entry.
+
+Local variables and instances are accessible only within the function in
+which they were declared. In particular, if a new function builder is
+opened without closing the current builder, the syntactically nested
+function builder is separated from the outer function; it does not have
+any access to the outer function's local variables and instances, and it
+may create its own local variables and instances without any restriction
+on types and names. The ``nesting'' feature does not have any
+significance for the built functions.
+
+Since accessor names are resolved syntactically, the types associated
+with local variables are not used for any registration mechanism. They
+are still used as filters for write accesses: if a field is declared
+with type \verb|std::foo|, then only references to such a type, or a
+sub-type thereof, may be written into the field. This is meant as a way
+to document intended types for local variable contents. Compliance with
+such type filters is verified dynamically by the interpreter (upon each
+actual write access), and statically by the compiler.
+
+\begin{rationale}
+When a function is entered, local variables, and local instance fields,
+are filled with their default values: booleans are \verb|false|, small
+modular integers are zero, and all other types (including
+\verb|std::int| fields) are uninitialized. Reading an uninitialized
+field triggers an exception. Contrary to structures, no accessor names
+are provided to test a local variable for initialization, or to reset it
+to uninitialized state: the intent of local variables is to never be
+read while still uninitialized, and the compiler will refuse to compile
+functions for which it cannot prove that local variables are never read
+before being written. This is meant to allow for more optimized usage of
+local variables, without tests for uninitialized state, at least in
+compiled functions. This also mimics the behaviour of both Java and C\#
+compilers.
+\end{rationale}
+
+Since references to local instances can be obtained, it is possible to
+access such instances after the activation context in which they were
+created has been destroyed. This is permitted in the interpreter (which
+implies that such local instances may actually be heap-allocated).
+However, the compiler enforces escape analysis to make sure that such
+survival does not happen, allowing local instances to be truly allocated
+within the activation context.
+
+An alternate syntax for declaring local variables uses the immediate
+function \verb|std::{| (note that the opening brace ``\verb|{|'' is a
+special character for the lexer, and thus a name by itself). The
+folowing:
+\begin{verbatim}
+    {a b c}
+\end{verbatim}
+declares three local variables of names ``\verb|a|'', ``\verb|b|'' and
+``\verb|c|'', respectively. They have type ``\verb|std::object|'', i.e.
+can accept any value (reference), and are initially uninitialized.
+
+The special immediate function ``\verb|std::->|'' can be used to write
+to several local variables at once, or even to combine declaration and
+initialization. When that function is executed (i.e. when encountered in
+source code, since it is immediate):
+\begin{itemize}
+
+    \item If the next token is ``\verb|{|'', then this opens a list of
+    names, ending with the closing token ``\verb|}|''. This both declares
+    and initializes local variables.
+
+    \item Otherwise, if the next token is ``\verb|[|'', then this opens
+    a list of names, ending with the closing token ``\verb|]|''. This
+    writes to several local variables, but does not declare them; the
+    local variables must already exist.
+
+    \item Otherwise, the next token must be the name of an already declared
+    local variable, and this is a write to that variable.
+
+\end{itemize}
+
+When writing to several local variables at once, they are listed in
+stack order (rightmost is top-of-stack). The three following
+constructions thus have identical effect:
+\begin{verbatim}
+    # Declare and initialize three variables.
+    ->{a b c}
+
+    # Declare three variables, then write to all of them at once.
+    {a b c} ->[a b c]
+
+    # Declare three variables, then write to them one at a time.
+    {a b c} ->c ->b ->a
+\end{verbatim}
+
+In the third one, note that ``\verb|->a|'' is interpreted as the
+accessor word that writes to the variable ``\verb|a|'', while
+``\verb|-> a|'' would be parsed as the ``\verb|->|'' immediate function,
+that then parses the token ``\verb|a|'', and adds to the current
+function the effect of writing to ``\verb|a|'' (a \textsc{putlocal}
+opcode), i.e. the same final outcome.
+
+\subsection{Namespaces and Imports}\label{syntax:namespace}
+
+At any point when processing source code, there is a \emph{current
+namespace} which is used to qualify raw names for which no active alias
+was found. The default current namespace is ``\verb|def|''.
+
+The \emph{current aliases} are a mapping from raw names to qualified
+names. Such mappings are built one at a time, and with \emph{import
+lists}. An import list is made of all names defined in a given namespace
+and declared ``exported''.
+
+The ``\verb|std::namespace|'' immediate function changes the current
+namespace:
+\begin{verbatim}
+    # Switch the current namespace to "foo"
+    namespace foo
+\end{verbatim}
+The \verb|namespace| function parses the next token, which must be an
+unqualified name.
+
+When the new current namespace is changed, all the currently defined
+aliases are cleared, and the import list for namespace \verb|std| is
+loaded.
+
+Aliases are defined with the ``\verb|std::alias|'' immediate function.
+This function parses the next token:
+\begin{itemize}
+
+    \item If the next token is a qualified name \verb|n::r|, then the
+    alias is for the raw name \verb|r| to the qualified name \verb|n::r|.
+
+    \item Otherwise, the next token must be a raw name \verb|r|. The
+    token that follows must then be a qualified name \verb|n::s|, and
+    the mapping will be from \verb|r| to \verb|n::s|.
+
+\end{itemize}
+
+Import lists are obtained with the ``\verb|std::import|'' immediate
+function. This function parses the next token, which must be an
+unqualified name. That name is taken to be that of a namespace, and the
+contents of the current list of exported names from that namespace are
+added to the current list of aliases. Take care that the list of
+imported names is the one at the time the \verb|import| clause is
+processed; names later added to the import list of that namespace are
+not automatically imported.
+
+Name collisions are handled with the following rules:
+\begin{itemize}
+
+    \item A defined alias consists in the following:
+    \begin{itemize}
+
+        \item A \emph{source name}: this is the name \emph{for which}
+        the alias is defined. It is always a raw name.
+
+        \item A \emph{destination name}: this is the name \emph{to
+        which} the alias is set. This name is an arbitrary string, but
+        is usually a qualified name. It may also be the special
+        \emph{invalid-name} value, which is distinct from all strings.
+
+        \item A \emph{provenance flag}: it is meant to be set for names
+        that have been set explicitly with \verb|std::alias|, and cleared
+        otherwise.
+
+    \end{itemize}
+
+    \item When an \verb|std::alias| clause is used to define an alias
+    for raw name \verb|r|:
+    \begin{itemize}
+
+        \item If there is no currently defined alias for \verb|r|, then
+        the alias is defined as specified by the clause; its provenance
+        flag is set.
+
+        \item Otherwise, if there is a currently defined alias for
+        \verb|r|, whose provenance flag is cleared, then the alias's
+        destination is set to the destination name provided by the
+        \verb|std::alias| clause, and its provenance flag is set.
+
+        \item Otherwise, if the currently defined alias for \verb|r|,
+        with its provenance flag set, has the same destination name as
+        the one specified by the \verb|std::alias| clause, then nothing
+        happens.
+
+        \item Otherwise, the new alias points to a name distinct from
+        the destination of the old alias, and the old alias has its
+        provenance flag set: in that situation, an error is raised.
+
+    \end{itemize}
+
+    \item When an \verb|std::import| clause is used to load an import
+    list, and the import list contains an alias for a raw name \verb|r|:
+    \begin{itemize}
+
+        \item If there is no currently defined alias for \verb|r|, then
+        the alias is defined as specified by the clause; its provenance
+        flag is cleared.
+
+        \item Otherwise, if there is a currently defined alias for
+        \verb|r| that points to the same name as the name defined in
+        the import list, then nothing happens.
+
+        \item Otherwise, if the currently defined alias for \verb|r|
+        has its provenance flag set, then nothing happens.
+
+        \item Otherwise, the new alias points to a name distinct from
+        the destination of the old alias, and the old alias has its
+        provenance flag cleared: in that situation, the alias's
+        destination is set to \emph{invalid-name}.
+
+    \end{itemize}
+
+    \item Whenever an alias is \emph{used} for raw name \verb|r| (i.e.
+    the raw name \verb|r| was encountered in a syntactic construction,
+    and it is to be transformed thanks to the current aliases), and
+    there is a currently defined alias for \verb|r| whose destination
+    is \emph{invalid-name}, then an error is raised.
+
+    \item The provenance flag has no influence on alias usage.
+
+\end{itemize}
+
+\begin{rationale}
+
+Import lists are roughly similar to Java's whole-package imports, e.g.
+``\verb|import java.util.*;|''. They have the same convenience of
+getting easy access to many names with a single programming clause, but
+they also share the same compatibility risks: if an import list is later
+modified by the source package to include more exported names, these new
+names may enter in conflict with other names defined by the source code
+or imported from other lists. The mechanism with \emph{invalid-name} and
+the provenance flag is meant to solve such issues along the following
+principles:
+\begin{itemize}
+
+    \item The developer is supposed to know what happens in her own
+    namespace. Thus, a conflict between two explicitly defined aliases
+    is a programming error, hence sanctioned immediately.
+
+    \item Similarly, a collision between an imported alias and an
+    explicitly defined alias is resolved in favour of the latter: an
+    explicit alias has precedence over an imported alias.
+
+    \item A collision between two imported aliases is not resolved,
+    but does not trigger an immediate exception: the import lists are
+    considered to be out of reach of the developer, and thus may
+    incur collisions that she cannot prevent. However, use of the name
+    on which the collision occurs becomes ambiguous, and thus triggers
+    an exception.
+
+    \item Redefining an alias identically is always permitted.
+
+    \item Order of declaration should not matter.
+
+\end{itemize}
+
+Ambiguous names (from collisions between import lists) can be resolved
+with an explicit \verb|std::alias| clause, that will take precedence
+over both import lists.
+
+It is a matter of programming style whether to use import lists or
+explicit aliases. The import list from \verb|std| is always loaded
+because it would be very inconvenient to write code without (in that
+respect, it is similar to OCaml's ``Pervasives'' module). Functions
+from other namespaces may be used with explicit namespace names, or
+explicit aliases, or import lists, or any combination thereof.
+
+\end{rationale}
+
+Existing syntax favours the declaration of ``simple aliases'' that map a
+raw name to a qualified version of the same name; this is what the
+\verb|<export>| keyword does when defining a function. Nevertheless,
+other (to be defined) API may be used to make aliases that map raw names
+to arbitrary strings, both explicitly and through import lists.
+
+\subsection{Errors}
+
+In all of the previous text, the expression ``raising an error'' was used
+many times. An error terminates execution immediately and is not
+recoverable. It may include an error code for reporting purposes.
+
+\begin{rationale}
+There are several models for error handling, notably the following:
+\begin{itemize}
+
+    \item Individual functions may report errors as special values, as
+    in C: for instance, a \verb|read()| call on a file descriptor (on
+    Unix-like systems) returns either the number of bytes that have been
+    read, or the special value \verb|-1|.
+
+    \item To avoid the need to put error codes in the same space as
+    values, the result may be wrapped into a container that retains
+    whether a value or an error was obtained, and additional syntactic
+    constructions are provided to test for errors and obtain the
+    result; this is how things are done in Rust.
+
+    \item In languages where functions can return several values,
+    functions may return the result \emph{and} an error code as separate
+    values; this requires a special ``no error'' error code, that the
+    caller can easily test, as well as a default value to return along
+    with the error code in case of error. Go uses this mechanism.
+
+    \item Errors may be reported through thrown exceptions, as in Java
+    or C\#. Activation contexts are unwinded until a catch mechanism
+    is reached.
+
+\end{itemize}
+
+All of these mechanisms are imperfect, in particular on small,
+constrained systems. Error values require extra code to receive them,
+test for them, and, more often that not, propagate error codes up the
+call chain. Exceptions tend to allow for a more compact and efficient
+implementation, in that they keep error handling out of the main
+processing; however, catching exceptions implies more complicated
+semantics that make code generation harder, and can increase code
+footprint.
+
+In T1, a cruder but simpler mechanism is used: any error terminates the
+whole program, or, more accurately, the whole \emph{module}. One of the
+points of T1 is to allow compact, efficient coroutines; thus, an
+application that uses T1 is supposed to be split into several modules
+that act as coroutines to each other. Each module has its own stack and
+heap, and modules communicate with each other only through serialized
+messages. For instance, in an SSL/TLS library, a module written in T1
+could handle X.509 certificate validation; it receives the encoded
+certificate chain, and returns the validation result (notably the public
+key from the certificate). Any validation failure then cancels the
+complete module, but not the application. In effect, T1 error management
+is about concentrating handling at module boundaries. This also maps to
+a clustering structure in which T1 modules might run on a distributed
+system.
+
+\end{rationale}

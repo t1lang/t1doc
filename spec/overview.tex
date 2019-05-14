@@ -1,0 +1,345 @@
+\section{Overview Of T1}
+
+\subsection{Project Goals}
+
+T1 aims at providing a number of features that are not all obtained
+together from existing languages. It can be viewed as an extension of
+T0, the Forth-like language which is used for some parts of BearSSL
+(namely, for processing handshake messages, and decoding X.509
+certificates). Within the context of BearSSL, T0 exists so as to express
+complex nested decoding and encoding over streamed data: in order to
+explore an encoded object with nested structures without requiring
+buffering of the entire object, the decoding process must be
+interruptible and restartable, i.e. live as a \emph{coroutine} that can
+be scheduled to run when and only when data bytes become available. The
+standard C language lacks coroutines; coroutines can be defined in
+non-standard ways, but will require an in-memory stack of non-negligible
+size for constrained systems; T0 provides a lightweight coroutine that
+uses a very small custom stack (with guaranteed limits on maximum stack
+growth).
+
+T1 is an evolution of T0 into a more ambitious project:
+\begin{itemize}
+
+    \item Like T0, T1 must support compilation into components that can
+    be embedded within applications that run on ``bare metal'' systems
+    (no OS support).
+
+    \item Lightweight coroutines must be supported.
+
+    \item T1 must be (by default) memory-safe. T0 has only limited
+    memory-safety, in that the compiler proves strict bounds on maximum
+    stack usage; however, array accesses in T0 are not checked with
+    regards to array boundaries.
+
+    \item T1 shall support object-oriented programming. OOP is primarily
+    a way to structure application code; in plain C, this is usually
+    done with function pointers arranged in vtables. The language can
+    provide primitives that help with OOP, for a simpler and safer
+    syntax. T0 has no specific OOP features.
+
+    \item T1 should \emph{optionally} support dynamic memory allocation.
+    This more or less implies the use of a garbage collector, to
+    maintain memory safety. It must be possible to write code that does
+    not use the GC, and, when the GC is present, it must be configurable
+    with strict limits on allocated size.
+
+    \item Code written in T1 is meant to be embeddable in applications
+    that primarily use C; thus, call to T1 code from C, and to C from
+    T1, shall be simple and efficient. In particular, the memory layout
+    of T1 objects should have a predictable counterpart in the C world,
+    so that direct access is feasible and easy.
+
+    \item While T0 has only a single flat namespace, T1 should offer
+    some ways to segment the code space into units that limit the risk
+    of name collision, especially if several different developers are
+    involved.
+
+\end{itemize}
+
+Memory safety and OOP both require the definition of a rich type system,
+which may then also be used by the developer to express constraints on
+the structure of the application, that will be verified and enforced at
+compilation and/or runtime.
+
+Since T1 aims at being a generic purpose language, it should be possible
+to write complex applications entirely in T1, starting with the T1
+interpreter/compiler itself (as is traditional for language
+development).
+
+Programming language design includes the syntax, which sits between a
+rational, deterministic machine (the computer) and a definitely less
+rational and deterministic human (the developer). As such, the language
+necessarily has an aesthetic facet, which cannot be rationally argued
+for or against. As a working principle on these matters, I define myself
+as the sole judge; T1 should aesthetically please me.
+
+\subsection{Main Features}
+
+T1 combines many features inspired from other programming languages, but
+not hitherto found together in a single language. Inspiration has been
+drawn from, in no particular order, C, Java, C\#, Forth, Caml, Rust, Go,
+and others. Some of the features will be explained in terms of
+comparisons with these other languages. In this section, we give an
+overview of the main features.
+
+\paragraph{Imperative.} T1 is an imperative language. More generally, it
+strives to give to the programmer a clear mental picture of what happens
+in the generated code; notably, order of execution of all operations is
+duly specified, and should match whenever possible left-to-right reading
+order in the source code. Automatic optimizations should be kept at a
+minimum (e.g. no automatic vectorization with SIMD instructions). This
+can be thought of as a ``no magic policy''.
+
+\paragraph{Fully Specified.} There is no ``undefined behaviour''. All
+operations occur in fully specified ways (this is similar to Java, and
+unlike C). There may be some platform-dependent characteristics, such as
+the possible range of integer values that can serve as array indices
+(this corresponds to types such as \verb|size_t| in C, or \verb|usize|
+in Rust).
+
+\paragraph{Combined Interpretation / Compilation Model.} The source
+code, when processed by the T1 engine, is really executed, as a script.
+The \emph{compiler} is a final optional phase that can extract some of
+the defined functions and serialize them into an executable form. While
+interpretation and post-compilation execution work on the same
+functions, they use quite different models:
+\begin{itemize}
+
+    \item During interpretation, everything is dynamic. Functions and
+    types can be referenced before they are defined; a violation is
+    reported only when trying to actually call a function which is not
+    yet defined. Interpreted code has full access to API that allow
+    creating new types and functions.
+
+    \item Compilation performs a thorough static type analysis that will
+    refuse to produce the executable output for code that does not
+    comply to strict rules. The point of the rules is to ensure that
+    execution won't fail with a type-related error; they can also
+    provide guarantees on good memory-wise behaviour. In particular,
+    compiled code is not allowed to be recursive, so that maximum stack
+    usage can be \emph{a priori} bounded.
+
+\end{itemize}
+
+Processing source code as a script to be executed means that compilation
+necessarily involves \emph{executing} the source code. The interpreter
+will provide a specific ``sandboxing'' mode which will prevent access to
+system-level features such as the network, or files outside of the
+source code collection itself. The ability to sandbox potentially
+hostile code is not considered a primary feature, but this should
+ultimately be supported.
+
+\paragraph{Extensible Postfix Syntax.} T1 uses a Forth-like syntax, which
+relies on postfix notation: operations appear after the operands. While
+this syntax does not follow traditional mathematical practice, and is
+thus harder to read and understand (at least without training), it has
+other advantages that are important to the T1 model:
+\begin{itemize}
+
+    \item In the postfix notation, everything happens in left-to-right
+    source order. This participates to the no-magic policy.
+
+    \item Since functions work over a shared data stack, they naturally
+    receive several arguments and return several values without any
+    extra syntax to that effect.
+
+    \item As in Forth, ``immediate'' functions can be defined, that are
+    invoked when encountered, in the middle of source code translation.
+    This way, the source code itself can take over the interpretation
+    process at any time and access the remaining of the source code in
+    arbitrary ways. This allows defining new syntax on the fly, and,
+    more generally, opens the way to generic powerful
+    \emph{metaprogramming}.
+
+    \item Postfix source code can be readily serialized into an
+    executable format running on \emph{threaded code}, a well-known code
+    generation method that can allow for a very small compiled code
+    footprint.
+
+\end{itemize}
+
+\paragraph{Generic Object-Oriented Programming.} In classic OOP (as in
+for instance Java or Go), functions can be attached to an object type
+and be invoked on an object instance (we then call them ``methods'').
+Several functions may share the same name; the one which will be invoked
+will depend on the \emph{runtime} type of the object on which the method
+is invoked (in C++ and C\# terms, this is how virtual methods work). T1
+goes one step further, in that the invoked function may depend on the
+runtime types of \emph{all} arguments, not just the first one. Indeed,
+while Java, C\# and other languages syntactically single out the first
+argument as ``the instance on which the method is invoked'', T1
+considers all arguments on the same ground.
+
+\paragraph{Only Dynamic Types.} Consider the following Java code snippet:
+\begin{verbatim}
+    class A {
+        void foo(A a) {
+            System.out.println("foo AA");
+        }
+        void foo(B b) {
+            System.out.println("foo AB");
+        }
+    }
+    class B extends A {
+        void foo(A a) {
+            System.out.println("foo BA");
+        }
+        void foo(B b) {
+            System.out.println("foo BB");
+        }
+    }
+    class C {
+        public static void main(String[] args) {
+            A x = new B();
+            A y = new B();
+            x.foo(y);
+        }
+    }
+\end{verbatim}
+This code will print ``\verb+foo BA+''. The variable \verb+x+ contains
+a reference to an object of type \verb+B+, so the invoked method will
+be one of \verb+B+, not one of \verb+A+, even though \verb+x+ was declared
+as a variable of type \verb+A+. On the other hand, \verb+y+ was also
+declared as a variable of type \verb+A+, and this is the type which will
+be used to decide which of \verb+B+'s \verb+foo()+ methods is invoked,
+even if the value which is then passed as parameter is really a reference
+to an instance of \verb+B+.
+
+This code snippet illustrates that Java uses two distinct notions of type
+for purposes of issuing calls to methods:
+\begin{itemize}
+
+    \item For the first parameter, i.e. syntactically the instance ``on
+    which'' the method is called, its \emph{dynamic type} is used: this
+    is the type of the instance, regardless of the apparent type of the
+    expression that yields a reference to that object.
+
+    \item For the other parameters (the ones within the parenthesized
+    list), only the \emph{static type} is used: this is the type
+    syntactically attached to the expression, irrespective of the actual
+    value at call time.
+
+\end{itemize}
+In T1, this duality is rejected; only dynamic types are used. This is
+part of the goal of OOP genericity: if all parameters to a function are
+treated on an equal basis, then they should all use the same kind of
+type analysis for purposes of method dispatch.
+
+Use of only dynamic types does not mean that static typing cannot be
+performed; in fact, the T1 compiler is all about making thorough static
+type analysis. Rather, this means that the goal of static analysis is to
+work out the possible dynamic types of the parameters upon execution,
+and verify that there will indeed be methods matching each call. The
+\emph{semantics} of the language are still defined in terms of the
+dynamic types of values, not of static types attached to expressions.
+
+\subsection{Memory Model}
+
+All \emph{values} are references, i.e. pointers to object instances.
+This also holds, formally, for small integer types; e.g. a value of type
+\verb+u32+ (32-bit unsigned integer) that contains the number \verb+5+
+is considered to be a pointer to an immutable instance that incarnates
+that number. In practice, for small integer types and booleans, these
+immutable instances don't actually exist in memory; formally, the
+booleans and small integers are still references.
+
+There is no null pointer. When an object is created in memory, its
+fields are \emph{uninitialized}, and reading an uninitialized field
+triggers a runtime error.
+
+\begin{rationale}
+Tony Hoare introduced null references in ALGOL, mostly because it was
+easy to do so. He now calls this decision ``his billion-dollar
+mistake''. Null pointers imply the risk of null pointer dereference. In
+modern ``big'' systems, in which there is an active memory management
+unit, a null pointer dereference will reliably trigger a CPU exception,
+which the operating system will convert into some sort of interruption
+(e.g. a \verb|SIGSEGV| signal on Unix-like systems). However, there can
+still be issues when the null pointer is taken as an array, with a large
+access index: the offset may make the access valid again, from the point
+of view of the MMU. On smaller systems without a MMU, null pointer
+dereferences cannot easily be trapped, leading to hard to debug errors.
+
+Some languages do not have null pointers, in particular the Caml family.
+These languages demonstrate that avoidance of null pointers is possible
+and not especially hard, though it requires explicit initializers for
+all fields. T1 takes a ``middle path'' in which null pointers don't
+exist, but individual object fields may be uninitialized; this means
+that runtime checks will happen only upon field access, not on all
+pointer following actions. Static analysis might also be able to remove
+some of these checks.
+\end{rationale}
+
+There are no C\#-style ``value types''. In C\#, a value type is a
+\verb+struct+ that contains fields, and which is cloned when needed. The
+main reason to have value types is storage efficiency. Consider, for
+instance, an application that manages a large array of dates. In C\#,
+this would use an array of the value type \verb+DateTime+; all these
+instances would be concatenated in memory into a single allocated chunk.
+In Java, which does not have value types, an array of \verb+Date+ would
+be used, but this would really be an array of references to individually
+allocated \verb+Date+ instances. This would be likely to induce a much
+larger overhead for the memory allocator; it also increases access cost,
+since that is one extra layer of pointers to follow.
+
+In order to recapture the storage efficiency of value types, T1 defines
+\emph{embedding}: when an object type is described, or an array created,
+fields can be defined to be either values (i.e. references), or embedded
+sub-objects. An embedded sub-object is allocated within the
+encapsulating object, and there is no extra pointer. This changes the
+semantics (the embedded object is always there, and cannot be
+substituted for another), and thus is made explicit in the language;
+this is not an automatic optimization.
+
+Since there are no value types, all parameters to functions are
+references, and all returned values are references as well. These values
+are exchanged over a common \emph{stack}. This stack is separate from
+the in-memory structure that keeps track of function calls (in Forth
+terms, the data stack is not the system stack). In compiled code, thanks
+to the restrictions imposed by the compiler, the stack needs not be more
+than a transient abstraction; there is not necessarily a single
+dedicated memory area with a stack pointer.
+
+Apart from the stack, functions may also declare local variables and
+locally allocated object instances (i.e. on the ``system stack'' in
+Forth terms). Local variables contain values, i.e. references to
+instances. Local variables are created when the function is entered, and
+destroyed when the function exits; notably, they are not bound to scopes
+smaller than a function body.
+
+The Go language supports creating structures that can contain either
+embedded sub-objects, or pointers to other objects. The default
+(simplest) syntax in Go is for embedding, and Go supports value types in
+the C\# sense. Since T1 core values are references, the syntax is
+different: structure types are by default references, and an extra
+syntax is used to make embeddings.
+
+During interpretation, instances are allocated dynamically, and memory
+is managed with a garbage collector: unreachable objects are
+automatically reclaimed. Compiled code offers several options:
+\begin{itemize}
+
+    \item The compilation phase may involve static allocation of
+    instances which were created during interpretation, and are
+    referenced from the produced code.
+
+    \item Scope-based allocation is possible (i.e. ``on the stack'').
+    This is allowed by the compiler only insofar as it can statically
+    determine, through escape analysis, that the object will not ever be
+    used after the declaring scope has exited; moreover, for objects
+    with a variable length (e.g. arrays), the actual length must be
+    fixed at compile time. Such allocation does not necessarily happen
+    on a physical stack.
+
+    \item Dynamic allocation with automatic reclamation by the GC is
+    possible. A point of T1, though, is to make such allocation optional
+    (if the code does not use such allocation, the GC itself won't be
+    included in the output).
+
+\end{itemize}
+
+All accesses to instances ultimately use special \emph{accessor
+functions} which are automatically defined when the corresponding type
+is declared. When accessing array elements (by index), the accessor
+functions enforce strict bounds checking.

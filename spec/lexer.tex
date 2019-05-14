@@ -1,0 +1,305 @@
+\section{Lexing}\label{lexing}
+
+We describe here how the T1 interpreter breaks down source code into
+individual tokens, upon which the T1 syntax is built. Since T1 is
+generically extensible (interpreted source code can, at any point,
+invoke itself and take over processing of the remaining of the source
+code), an arbitrary number of new parsing rules can be implemented by
+source code. The rules detailed below explain how parsing is done at the
+start of the source code processing.
+
+\begin{rationale}
+In Forth, the only lexing process is to aggregate sequences of non-space
+characters into ``words''. All other syntax, e.g. literal strings or
+comments, is implemented by custom ``immediate words'', which are
+functions that are invoked right away when encountered in the source
+stream. T1 implements a more complicated lexing process for ease of
+development.
+
+It shall be noted that Forth aims at offering support for development
+right on the target system, which may be embedded and constrained; this
+is one of the main reason for the very simple lexing process of Forth.
+In T1, the normal model is to make development on a dedicated powerful
+development workstation, distinct from the target system on which the
+code will run, which is why more expensive lexing is not an issue.
+\end{rationale}
+
+\paragraph{Input Characters.} Source code consists in a number of text
+streams that are processed in due order. They are normally stored as
+individual files. Each stream contains bytes which are interpreted into
+\emph{characters} using UTF-8 encoding; in this specification, a
+character is a Unicode ``code point'', i.e. an integer in the
+\verb|U+0000| to \verb|U+10FFFD| range. Outside of literal strings, only
+ASCII characters (\verb|U+0000| to \verb|U+007E|) may appear.
+
+\begin{rationale}
+
+As will be described below, all the lexing really operates on bytes. In
+UTF-8 encoding, each ASCII character is encoded as a single byte with
+the same value, and all other code points are encoded as sequences of
+bytes of value \verb|0x80| or more. The non-ASCII byte values that
+appear in literal strings can thus be simply copied, since, as we shall
+see, string values are really arrays of bytes. Moreover, the source
+itself can define and then invoke functions that can take over source
+code processing in arbitrary ways, and such functions may interpret
+source bytes differently. In that sense, it is not strictly necessary
+that source file uses UTF-8 encoding, only that the parts that rely on
+the lexing process described here use only ASCII characters outside of
+literal strings.
+
+However, it is expected that most source code writing will be done with
+text editors, that are likely to rely on, and enforce, a specific
+encoding charset. In the interest of maximum interoperability, it is
+here defined that all source code \emph{shall} be UTF-8 encoded, and
+interpreters/compilers may enforce it.
+\end{rationale}
+
+Text breaks down into lines; each line is terminated by a newline
+character (\verb|U+000A|). If a line ends with a CR+LF sequence
+(\verb|U+000D| followed by \verb|U+000A|), then this is considered to be
+equivalent to a single newline character.
+
+\paragraph{Whitespace.} \emph{Whitespace} is any sequence of one or more
+characters in the \verb|U+0000| to \verb|U+0020| range, i.e. all ASCII
+control characters, and the ASCII space. Thus, tabulations
+(\verb|U+0009|) and newline (\verb|U+000A|) are whitespace. Whitespace
+characters separate tokens, but are otherwise not significant.
+Indentation, in particular, is a purely aesthetic choice with no impact
+on semantics. Take care that whitespace characters appearing within
+literal strings do not count as whitespace.
+
+\paragraph{Comments.} The character ``\verb|#|'' starts a comment
+(unless it appears within a literal string or a character constant). The
+comment spans to the end of the current line, but does not include the
+newline character that terminates that line. If a comment appears on the
+last line of a file that does not end with a newline character, the
+comment spans to the end of the file. Comments are ignored; since, in
+general, a comment is immediately followed by a newline character, that
+newline character acts as whitespace.
+
+\paragraph{Single-Character Tokens.} Each of the following characters,
+when encountered outside of a literal string or character constant, counts
+as a token in its own right:
+\begin{verbatim}
+    ( ) [ ] { } '
+\end{verbatim}
+
+\paragraph{Names and Numerical Constants.} The lexer parses a
+\emph{word} as a sequence of non-space printable ASCII characters
+(\verb|U+0021| to \verb|U+007E|), excluding the following characters:
+\begin{verbatim}
+    ( ) [ ] { } ' " #
+\end{verbatim}
+The lexing process is ``greedy'': the longest sequence of allowed
+characters is assembled, and stops at the first disallowed character
+(from the list above), whitespace, or end-of-stream, whichever comes
+first.
+
+\emph{Numerical Constants} include the following:
+\begin{itemize}
+
+    \item \emph{Boolean constants} are the words ``\verb|true|'' and
+    ``\verb|false|''.
+
+    \item \emph{Character constants} are all words that start with a
+    backquote character (``\verb|`|'', \verb|U+0060|).
+
+    \item \emph{Number constants} are all the words that start with an
+    ASCII digit (``\verb|0|'' to ``\verb|9|''), or a minus
+    (``\verb|-|'') or plus sign (``\verb|+|'') followed by an ASCII
+    digit.
+
+\end{itemize}
+
+\emph{Names} are words which are not numerical constants.
+
+Note that a word which starts with a sequence that introduces a numerical
+constant, but fails to parse as a valid numerical constant, triggers an
+error; it is not ``demoted'' to being a name.
+
+\begin{rationale}
+In Forth, when a word is encountered, it is first evaluated as a
+function name; this works because Forth uses a strict define-before-use
+policy, so any word can be unambiguously matched against existing
+functions at this point. Only words which are not recognized as function
+names will be re-interpreted as possible numerical constants. A side
+effect is that it allows defining functions with names such as
+\verb+42+, a feature which is more confusing than useful.
+
+In T1, we allow referencing functions and types that will be defined
+later on, and thus we cannot use numerical interpretation as a fallback
+for unknown function names. The non-reinterpretation of invalid
+numerical constants as names is meant to promote readability: looking at
+the start of a word is enough to know whether it is a numerical constant
+or a name; it also allows later versions of T1 to enrich the syntax with
+more numerical constants, e.g. floating-point values, without breaking
+backward compatibility.
+
+A consequence is that function names cannot start with a digit, such as
+Forth's ``\verb+2DUP+''.
+\end{rationale}
+
+\paragraph{Number Constants.} Valid number constants are:
+\begin{itemize}
+
+    \item a sequence of ASCII digits, interpreted as an integer value
+    in base 10;
+
+    \item the sequence ``\verb|0x|'' or ``\verb|0X|'', followed by
+    one or more hexadecimal digits (hexadecimal digits are ASCII digits
+    ``\verb|0|'' to ``\verb|9|'', ASCII uppercase letters
+    ``\verb|A|'' to ``\verb|F|'', and ASCII lowercase letters
+    ``\verb|a|'' to ``\verb|f|''), interpreted as an integer value
+    in base 16 (case is not significant);
+
+    \item the sequence ``\verb|0b|'' or ``\verb|0B|'', followed by one
+    or more binary digits (``\verb|0|'' or ``\verb|1|''), interpreted as
+    an integer value in base 2;
+
+    \item any of the above, preceded by a minus sign (``\verb|-|'') or a
+    plus sign (``\verb|+|''); the minus sign makes the value negative,
+    while the plus sign does not change the value and is purely
+    cosmetic;
+
+    \item any of the above, followed by a suffix in the following list,
+    and defining the constant to have the corresponding modular integer
+    type: \verb|i8| \ \verb|i16| \ \verb|i32| \ \verb|i64| \ \verb|u8|
+    \ \verb|u16| \ \verb|u32| \ \verb|u64|
+
+\end{itemize}
+
+If the number constant does not have an explicit type suffix, then it
+has plain integer type (\verb|std::int|, as will be defined in
+section~\ref{types}). If the value does not fit in the allowed range for
+the target type, then an error is raised.
+
+\paragraph{Character Constants.} A \emph{character constant} describes
+an integer value of type \verb|std::u8| in the 0 to 126 range
+(inclusive). Valid character constants consist in a backquote character
+(\verb|U+0060|) followed by:
+\begin{itemize}
+
+    \item a single ASCII character in the \verb|U+0021| to
+    \verb|U+007E| range, excluding the backslash character
+    (``\verb|\|'');
+
+    \item an escape sequence that starts with a backslash, followed
+    by one character:
+    \begin{itemize}
+
+        \item \verb|\s| stands for space (\verb|U+0020|);
+        \item \verb|\t| stands for tabulation (\verb|U+0009|);
+        \item \verb|\r| stands for carriage return (\verb|U+000D|);
+        \item \verb|\n| stands for newline (\verb|U+000A|);
+        \item \verb|\'| stands for quote (\verb|U+0027|);
+        \item \verb|\`| stands for backquote (\verb|U+0060|);
+        \item \verb|\"| stands for double-quote (\verb|U+0022|);
+        \item \verb|\\| stands for backslash (\verb|U+005C|).
+
+    \end{itemize}
+
+\end{itemize}
+
+In all cases, the character constant stands for the numerical value that
+corresponds to the represented code point.
+
+\begin{rationale}
+Character constants are deliberately limited to plain ASCII because
+they have type \verb|std::u8|, following the decision that ``normal''
+strings really are sequences of bytes. This will be explained in more
+details in section~\ref{types}.
+\end{rationale}
+
+Since character constants are self-terminated (inspection of their
+contents is enough to decide that no extra character follows in the
+token), they need not be separated by whitespace from the next token.
+Thus, ``\verb|`ab|'' is parsed as two tokens, the character constant for
+lowercase letter ``a'', then the one-character name ``\verb|b|''. This
+is of course confusing, so don't do that.
+
+\paragraph{Literal Strings.} A \emph{literal string} represents a value
+which is a sequence of bytes. Such a token starts with a double-quote
+character ``\verb|"|'' and ends at the next unescaped double-quote
+character. The following rules apply:
+\begin{itemize}
+
+    \item The starting and ending double-quote characters are not part
+    of the string contents.
+
+    \item Bytes appearing in the string literal, other than backslash
+    and newline, are part of the string literal. This includes all byte
+    values, even ASCII control characters (note that a CR+LF sequence at
+    the end of a source text line counts as a single newline character,
+    which cannot appear unescaped within a literal string).
+
+    \item When a backslash appears within a literal string:
+    \begin{itemize}
+
+        \item If the backslash is immediately followed by the newline
+        (or CR+LF) that ends the line, then this is a \emph{line
+        escape}: the next line must start with zero or more whitespace
+        characters (except newline), followed by a double-quote
+        character; the backslash, newline, whitespace and double-quote
+        character are then skipped, and parsing of the literal string
+        continues after the double-quote character.
+
+        \item Otherwise, the backslash character must begin an escape
+        sequence. Escape sequences are:
+        \begin{itemize}
+
+            \item escape sequences that may appear in character constants;
+
+            \item \verb|\x| followed by exactly two hexadecimal digits,
+            standing for the byte whose value is expressed in hexadecimal
+            by these two digits;
+
+            \item \verb|\u| followed by exactly four hexadecimal digits,
+            standing for the UTF-8 encoding of the code point whose value
+            is expressed in hexadecimal by these four digits;
+
+            \item \verb|\U| followed by exactly six hexadecimal digits,
+            standing for the UTF-8 encoding of the code point whose value
+            is expressed in hexadecimal by these six digits.
+
+        \end{itemize}
+
+        Note that hexadecimal digits are ASCII digits ``\verb|0|'' to
+        ``\verb|9|'', uppercase letters ``\verb|A|'' to ``\verb|F|'',
+        and lowercase letters ``\verb|a|'' to ``\verb|f|''. Case is not
+        significant for hexadecimal digits. Unrecognized escape
+        sequences trigger errors.
+
+    \end{itemize}
+
+\end{itemize}
+
+For instance, this literal string:
+\begin{verbatim}
+    "Hello\
+    " World!"
+\end{verbatim}
+uses a line escape and has contents ``Hello World!''.
+
+The four following strings:
+\begin{verbatim}
+    "café"
+    "caf\xc3\xa9"
+    "caf\u00E9"
+    "caf\U0000E9"
+\end{verbatim}
+all define the same sequence of five bytes. Take care that ``\verb|\x|''
+escapes allow inclusion of arbitrary byte values which do not
+necessarily correspond to the valid UTF-8 encoding of a sequence of code
+points.
+
+Apart from line escapes, newline characters may not appear into a
+literal string (but a ``\verb|\n|'' escape sequence can be used to
+include a newline character in the string contents). Thus, a literal
+string may span several lines only if each line (except the last) ends
+with a line escape. Moreover, a string literal must be terminated before
+the end of the current text stream; string literals do not span across
+files.
+
+Since the whitespace characters that are part of a line escape do not
+include the newline character, a comment is not possible within that
+whitespace.

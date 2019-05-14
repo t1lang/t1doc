@@ -1,0 +1,94 @@
+\section{Names}
+
+In T1, functions, types and local variables have names. A name is a
+sequence of characters (unicode code points). In general, any sequence
+of code points is usable for any purpose. However, names that are
+encountered within source code are subject to some processing which
+modifies their interpretation and restricts their syntax.
+
+The lexer parses a name as a token that contains only printable non-space
+ASCII characters, excluding a few ``forbidden'' characters (parentheses,
+braces...). Such a name may be ``qualified'' or ``unqualified'':
+\begin{itemize}
+
+    \item A \emph{qualified name} contains a single instance of the
+    sequence ``\verb|::|''. The part before the sequence is the
+    \emph{namespace}, and the part after is the \emph{raw
+    name}.\footnote{In general a name shall not contain more than one
+    instance of ``\texttt{\textbf{::}}''. If it does, then all
+    operations that split the name into a namespace and a ``raw'' name
+    use the first (leftmost) occurrence of ``\texttt{\textbf{::}}'' as
+    splitting point.}
+
+    \item An \emph{unqualified name} does not contain the sequence
+    ``\verb|::|''. Thus, raw names (obtained from removing the namespace
+    from a qualified name) are unqualified.
+
+\end{itemize}
+
+The general model of source code interpretation is that qualified names
+designate a specific entity, and unqualified names are interpreted
+depending only on the syntactic context. For instance, under normal
+conditions, the interpreter reads the next token and expects it to be
+either a numerical constant, a literal string, or a function name. In
+this last case:
+\begin{itemize}
+
+    \item If the name is qualified, then this designates exactly that
+    function.
+
+    \item If the name is not qualified, then it will be matched against
+    the following, in due order:
+    \begin{itemize}
+
+        \item If the name matches an accessor for a locally allocated
+        variable or instance, then the name is interpreted as an
+        invocation of that accessor.
+
+        \item If the name is part of one of the currently defined aliases
+        (imports), then it designates the function that the alias maps
+        to.
+
+        \item Otherwise, the name is considered to use the currently
+        active namespace.
+
+    \end{itemize}
+
+\end{itemize}
+
+Namespaces are used to keep track of defined functions and types, and to
+avoid spurious collisions. Normal source code should contain very few
+qualified names:
+\begin{itemize}
+
+    \item At any point in the source code, there is an active namespace
+    in which new functions and types are defined.
+
+    \item Access to names in other namespaces is normally done through
+    aliases and import lists.
+
+    \item The developers are supposed to have full knowledge of ``their''
+    namespaces, and thus avoid internal collisions.
+
+\end{itemize}
+
+There are no visibility rules, i.e. public and non-public functions and
+types. Every such element \emph{can} be accessed by using a qualified
+name. However, good software engineering practice is to refrain from
+doing so in the general case. Functions and types can be added to the
+\emph{export list} of the currently active namespace: such an export
+list can be imported from other namespaces with an ``\verb|import|''
+clause, which locally defines corresponding aliases for the exported
+names. In that sense, ``public'' functions can be defined by making them
+part of the export list of their namespace, which documents the intent
+of making them callable from other namespaces.
+
+More details on import lists and aliases are given in
+section~\ref{syntax:namespace}.
+
+All namespaces that start with ``\verb|std|'' are reserved for the T1
+implementation. Notably, the export list for ``\verb|std|'' itself is
+automatically imported, and it defines aliases for all the core
+syntactic constructions and types. Source code can, at any time, clear
+the current list of aliases, including those from the ``\verb|std|''
+export list.

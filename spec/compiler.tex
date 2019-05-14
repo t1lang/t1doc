@@ -1,0 +1,400 @@
+\section{Compilation}
+
+\emph{Compilation} is a step which optionally occurs at the end of
+interpretation, when T1 is invoked ``as a compiler''; it can also be
+triggered explicitly by the source code itself. Compilation takes as
+input a list of \emph{entry points} (specific functions), and produces
+an executable form of these functions and their transitive dependencies.
+This process is meant to fulfill the following:
+\begin{itemize}
+
+    \item Compiled code is small and self-reliant. It can be invoked and
+    run without requiring access to a bulky runtime system.
+
+    \item Interpretation features, such as defining types or new
+    functions, are not available in compiled code. Notably, compiled
+    code cannot access type or function names.
+
+    \item Compiled output should be amenable to integration within
+    applications written in other languages, in particular C.
+
+    \item The compiler offers strong guarantees on the usage of memory
+    resources by compiled code: maximum data stack depth and maximum
+    storage area for activation contexts (including local variables
+    and locally allocated instances) are computed; and dynamic
+    memory allocation, if supported at all, can be made to occur only
+    in a specific, limited area provided by the caller that invokes
+    the compiled code.
+
+    \item Compiled code is proven not to trigger any error related
+    to function invocation: whenever a function is invoked, there is
+    exactly one matching function that is more precise than all other
+    matching functions; and accessor functions called on instances that
+    extend the structure on which the accessor was defined find an
+    unambiguous instance on which the access is to be performed.
+
+    \item Similarly, compiled code is proven never to read an
+    uninitialized local variable, to let a reference to a locally
+    allocated instance escape its activation context, or to attempt to
+    write into a statically allocated instance.
+
+\end{itemize}
+
+Compilation can work only on a subset of valid codes; notable among the
+restrictions is that compiled code cannot be generally recursive, since
+such recursion would prevent computing strong bounds on stack depth.
+
+\begin{rationale}
+
+Banning recursion is controversial, especially since most functional
+languages instead strive to use recursion to express most of flow
+control. The two main reasons to forbid recursion in T1 are the
+following:
+\begin{itemize}
+
+    \item Not allowing recursion means that the call tree is finished,
+    which permits the general flow analysis (described below) to
+    terminate.
+
+    \item Recursion allocates memory in spaces which are scarce on
+    memory resources. T1 aims at being useful for small embedded systems
+    that have only a few kilobytes of RAM in total; however, even on
+    bigger systems, stacks are small. For instance, a typical modern
+    desktop system or laptop will have gigabytes of RAM, but the stack
+    allocated for a thread is smaller (8 megabytes by default on Linux).
+    Common sense dictates that if unbounded memory allocation occurs, it
+    should not be done in an area which is a thousand times smaller than
+    the heap, and for which the only detection mechanism for allocation
+    failure is \verb|SIGSEGV|.
+
+\end{itemize}
+
+In a future version, \emph{tail calls} may be implemented, and tail
+recursion allowed. In a tail call, the activation context of the caller
+is released first, and when the callee returns, control is passed back
+not to the caller, but the caller's caller. If a tail call does not
+imply undue stack growth, then it won't prevent computing finite bounds
+on stack depth, and it \emph{should} be manageable by flow analysis.
+
+\end{rationale}
+
+\subsection{Flow Analysis And Types}
+
+\emph{Flow analysis} is the central step of compilation. Consider
+the following code excerpt:
+
+\begin{verbatim}
+    : triple (object)
+        dup dup + + ;
+    : main ()
+        4i32 triple println
+        "foo" triple println ;
+\end{verbatim}
+
+The flow analysis starts with the entry point (\verb|main|) and an empty
+stack. Then, after the \verb|4i32| token, the stack should contain
+exactly one element of type \verb|i32|. At that point, the \verb|triple|
+function is invoked. There is exactly one matching function of that name
+for a stack with one element of type \verb|i32|, and therefore the call
+is unambiguous.
+
+Analysis proceeds with the \verb|triple| function. Crucially, analysis
+of \verb|main| is not finished; it will be continued when this call to
+\verb|triple| is done. Within \verb|triple|, the calls to \verb|dup| and
+\verb|+| are followed; notably, when the first \verb|+| call is reached,
+the stack is determined to contain three elements of type \verb|i32|.
+When the end of \verb|triple| is reached, the stack is back to
+containing one element of type \verb|i32|. At that point, flow analysis
+jumps back to the caller (\verb|main|) and can proceed to the next call
+(\verb|println|) since it is now known that this call is potentially
+reachable (the \verb|triple| function may return) and also which stack
+contents to expect at that time. The call to \verb|println| is resolved
+to the function of that name that expects an element of type \verb|i32|.
+
+Later on, the analysis reaches the second call to \verb|triple| in the
+\verb|main| function. For that one, the stack contains one element of
+type \verb|string|\footnote{Strictly speaking, \texttt{\textbf{string}}
+is merely an alias on \texttt{\textbf{(std::u8 std::array)}}, but we
+will use the name \texttt{\textbf{string}} for the clarity of the
+exposition.}. There is still one matching function of name
+\verb|triple|, and this is the same one as previously (indeed, there's
+only one \verb|triple| function defined in this example, so only that
+one may be called). However, the flow analysis of \verb|triple| will be
+done \emph{again}: everything is done as if that call was a new one.
+
+In that new call to \verb|triple|, the stack initially contains one
+\verb|string|; after the two \verb|dup| calls, it contains three
+\verb|string| elements; then, the \verb|+| calls will be resolved to the
+function that ``adds'' strings (it concatenates them into newly
+heap-allocated string values). That second analysis of \verb|triple|
+concludes and returns a single \verb|string|. In \verb|main|, the second
+\verb|println| call is resolved to the function of that name that
+expects one element of type \verb|string| (not the same one as the one
+that expects an \verb|i32|).
+
+The salient points of this process are the following:
+\begin{itemize}
+
+    \item The \verb|triple| function has been \emph{registered} with one
+    parameter type, which is generic (\verb|object| matches all value
+    types). It cannot really be called on values of every type; for
+    instance, it cannot be called on \verb|bool| since there is no
+    defined \verb|+| function that works on \verb|bool| values. But it
+    does not matter that the function could \emph{in abstracto} be
+    invoked on values on which it would not work; what counts is whether
+    such an invalid call is actually made in the program at hand. The
+    flow analysis determines that all calls to \verb|triple| will work,
+    and that is sufficient.
+
+    \item Similarly, \verb|triple| could have been registered with no
+    parameter at all (``\verb|: triple ()|''). During flow analysis, the
+    compiler would still have known that at the time the function is
+    invoked, there is a value on the stack, and the first \verb|dup|
+    call won't underflow. Types for function registration are used
+    \emph{only} to determine which function is called, not to restrict
+    the actual usage of values on the stack\footnote{It is still good
+    software engineering to register functions with exactly the
+    parameters that it is going to use, if only for better source code
+    readability.}.
+
+    \item The fact that each \verb|triple| call has its own analysis
+    avoids type merging trouble. If both calls were the same node in the
+    call graph, then the flow analysis would be faced with calling
+    \verb|+| on a stack with three elements, each being either a
+    \verb|string| or an \verb|i32|. Such a call would not succeed
+    because there is no \verb|+| function that can work over a
+    \verb|string| and an \verb|i32|; the compiler would reject the code
+    as making a call which is potentially unsolvable. In this case,
+    duplicating the \verb|triple| node allows the flow analysis to keep
+    track of the fact that while all three stack elements at this point
+    may be of type \verb|i32| or \verb|string|, they all three have the
+    same type, and cross combinations are not possible.
+
+\end{itemize}
+
+The node duplication means that, as far as flow analysis is concerned,
+the ``call graph'' is a \emph{call tree}.
+
+\begin{rationale}
+Duplication of nodes for function calls is what makes all function
+``generic'' in the Java or C\# sense. But since the analysis is done
+only deductively, i.e. based on what may be on the stack at that
+point of the program, there is no need for a syntax to express what
+type combinations are allowed. Again, T1 does not care whether a given
+function could work on all input values that may exist in the universe,
+only that it would work with what may actually be present on the stack
+at the time of the call.
+\end{rationale}
+
+\emph{Type merging} may still occur because of jump opcodes. For
+instance, consider this function:
+
+\begin{verbatim}
+    : muxprint (object object bool)
+        if drop else swap drop then println ;
+\end{verbatim}
+
+Suppose that the top three elements for a call to \verb|muxprint| are
+values of type \verb|A|, \verb|B| and \verb|bool|. In the built function,
+the call to \verb|println| can be reached from two points: this could
+follow the ``\verb|swap drop|'' sequence (the boolean was \verb|false|,
+the value of type \verb|A| has been dropped, the stack now contains an
+object of type \verb|B|), or be reached through the jump that is implicit
+in the \verb|else| construction. In the latter case, the top of the stack
+will be a value of type \verb|A|.
+
+Thus, flow analysis will consider that when \verb|println| is called,
+the stack may contain one element which is of type \verb|A| or of type
+\verb|B|. The call will be accepted only if it is solvable in both
+cases. If the two cases are solvable, but lead to distinct functions,
+then both functions will be analyzed, each with its own context.
+
+For the purposes of flow analysis, all individual conditional jump
+opcodes are considered independent of each other. This means that
+the following cannot be compiled successfully:
+
+\begin{verbatim}
+    : foo (bool)
+        ->{x} {y}
+        x if 42 ->y then
+        x if y println then ;
+\end{verbatim}
+
+Indeed, this function uses the provided input value (stored in the local
+variable \verb|x|) to decide whether to put the integer \verb|42| in the
+variable \verb|y| (first ``\verb|if|'' clause), and whether to print the
+contents of the \verb|y| variable (second ``\verb|if|'' clause). The
+compiler does not notice that both jumps use the same control value;
+instead, it considers that the jumps are independant of each other, and,
+in particular, the first jump may be taken, thus skipping the
+initialization of \verb|y|, while the second would not, leading to the
+read of the potentially uninitialized variable \verb|y|.
+
+\begin{rationale}
+The idea that conditional jumps are independent of each other has been
+borrowed from Java. Indeed, with the equivalent Java code:
+\begin{verbatim}
+    static void foo(boolean x) {
+        int y;
+        if (x) {
+            y = 42;
+        }
+        if (x) {
+            System.out.println(y);
+        }
+    }
+\end{verbatim}
+Java compilation fails with the error ``variable \verb|y| might not
+have been initialized''.
+
+This is not considered a great restriction. In practical Java
+development, that kind of error occurs mostly when adding debug code to
+an existing function, activated with a global ``debug'' flag.
+\end{rationale}
+
+The notion of \emph{type} used for the flow analysis is the combination
+of the \verb|std::type| for the value, and the \emph{object allocation
+point}. An object allocation point is one of the following:
+\begin{itemize}
+
+    \item static allocation (conceptually, in ROM, thus non-modifiable);
+
+    \item the heap;
+
+    \item a specific local slot within the activation context of a
+    specific function call, i.e. a node in the call tree.
+
+\end{itemize}
+This information is the basis for the escape analysis (making sure that
+instances allocated in activation contexts are not reachable after the
+called function has returned) and for the verification of constant
+objects (static allocation corresponds to \verb|const| definitions in C,
+and thus normally end up in non-modifiable memory).
+
+Apart from the stack contents, the types of local variables at any point
+in a given function (for a given activation context, i.e. within a node
+in the call tree), is also maintained. A special \verb|nil| type is used
+for uninitialized local variables; any attempt at reading \verb|nil| is
+rejected at compilation time.
+
+Types of values written in object fields are tracked. The container
+types are distinguished by allocation point, but all instances with the
+same allocation point use the same tracking. Therefore, writing a value
+of type \verb|int| in the field \verb|x| of a heap-allocated object of
+type \verb|T| implies that, from the point of view of the flow analyzer,
+all objects of type \verb|T| that are heap-allocated may contain, at all
+times, a value of type \verb|int| in their \verb|x| field.
+
+Note that any merging may enrich the list of possible types in a stack
+slot, local variable or object field, and trigger further flow analysis
+for all parts of the call tree that depend on it.
+
+\subsection{Constraints}
+
+The following constraints are enforced by the flow analyzer; any
+violation implies a compilation failure:
+\begin{itemize}
+
+    \item The call tree must be finished.
+
+    \item At every merge point, the stack depth is the same for all
+    code paths leading to that point.
+
+    \item No merge between basic types (booleans and small modular
+    integers), or between a basic type and a non-basic type, may occur,
+    whether on the stack, in local variables, or within fields of
+    a structure type.
+
+    \item When a local variable is read, it may not contain \verb|nil|
+    (which marks the uninitialized state).
+
+    \item No write to a field of an object with static allocation may
+    happen.
+
+    \item Whenever a value has an allocation point tied to a given node
+    $N_1$ in the call tree, and it is written in a field of an other
+    object, then that other object must have an allocation point tied
+    to a node $N_2$, and $N_2$ must be either equal to $N_1$, or a
+    descendant of $N_2$ in the call tree.
+
+    \item When a function returns, the stack contents must not contain
+    any value whose allocation point is the node of that function in the
+    call tree.
+
+    \item For every function call, all possible combinations of types on
+    the stack at that point must be solvable, i.e. lead to a single most
+    precise function call.
+
+    \item When a field accessor is invoked, the field must be
+    unambiguously located for all possible types of the owner object.
+
+\end{itemize}
+
+Note that some special functions do not return (e.g. \verb|std::fail|).
+This is detected during flow analysis. As such, some opcodes may be
+unreachable; these will be trimmed during code generation.
+
+\begin{rationale}
+Each basic type may be merged only with itself because basic types have
+specific storage requirements, that may differ from those of ``normal''
+values (which are pointers). In the generated code, values of basic
+types may be passed around on a different, dedicated stack, or different
+registers. Similarly, an object field declared with type \verb|std::u8|
+should correspond to a one-byte slot in the memory layout; a feature
+of T1 is that object layouts are predictable, so that they can be
+accessed from C code.
+
+The finiteness of the call tree is enforced with nested call counters:
+when a node is entered that corresponds to a given function $f$, the
+counter for $f$ is incremented; it is decremented when leaving $f$. If
+the counter goes over a given threshold, then compilation stops with an
+explicit message. This necessarily detects all infinite trees, since
+there are only a finite number of functions, each with a finite number
+of opcodes: an infinite tree can be obtained only through infinite
+recursion.
+
+Some finite recursion is still tolerated. This allows for some cases
+where the same generic function is used for several levels of a nested
+structure, but with distinct types that guarantee against unbounded
+recursion.
+\end{rationale}
+
+\subsection{Code Generation}
+
+Code generation occurs after flow analysis has completed successfully.
+How code is generated depends on the target type; the compiler may
+produce portable threaded code, or native code, or WASM, or anything
+else. Generated code includes all functions that are part of the
+call tree; other functions are automatically excluded.
+
+A generic \emph{function merging} process occurs during code generation.
+In the flow analysis, functions were duplicated: the same piece of code
+may yield several distinct nodes in the call tree. When generating code,
+these nodes may be merged back. This is subject to some restrictions and
+subtleties:
+\begin{itemize}
+
+    \item Some merge operations may not be feasible. In our example with
+    the \verb|triple| function, one of the nodes works on \verb|i32|
+    values while the other uses \verb|string| values. In generated code,
+    these values use different storage techniques (e.g. stack slots of
+    different size, or different registers), which may preclude merging.
+
+    \item Even when function merging is possible, it may be undesirable
+    for performance: for instance, the unmerged function may have only
+    simple calls (each \verb|triple| function node calls a single
+    well-defined \verb|+| function), while the merged function may need
+    a type-based dynamic dispatch (if the \verb|i32| and \verb|string|
+    could be merged, the \verb|triple| function would have to look at
+    the runtime type of the values to decide which \verb|+| version to
+    call).
+
+\end{itemize}
+
+\begin{rationale}
+In general, in T1, we aim at code compacity, hence apply merging
+whenever possible. A future annotation will allow to explicitly tag some
+functions as prohibiting non-trivial merging, i.e. when the relevant
+types are not all strictly identical. This would reproduce the trade-offs
+usually seen in C with \verb|inline| functions.
+\end{rationale}

@@ -1,0 +1,100 @@
+\documentclass[12pt]{article}
+  
+\usepackage[lf]{ebgaramond}
+\usepackage[cmintegrals,cmbraces]{newtxmath}
+\usepackage{ebgaramond-maths}
+\usepackage{biolinum}
+\usepackage[scaled=0.85]{inconsolata}
+%\usepackage[scaled=0.75]{DejaVuSansMono}
+\makeatletter
+\def\verbatim@font{\ttfamily\bfseries}
+\makeatother
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8x]{inputenc}
+\usepackage[english]{babel}
+\usepackage{graphicx}
+\usepackage{xspace}
+
+\usepackage{wallpaper}
+\usepackage{xcolor}
+\usepackage{fancyvrb}
+\usepackage{relsize}
+\usepackage{multicol}
+
+\usepackage{fullpage}
+
+\usepackage{sectsty}
+\allsectionsfont{\sffamily}
+
+\usepackage{hyperref}
+\usepackage[all]{hypcap}
+
+%\usepackage{framed}
+\usepackage[framemethod=tikz]{mdframed}
+
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{2ex}
+
+\definecolor{rationalebg}{rgb}{1.0,1.0,0.8}
+
+%\newenvironment{rationale}{%
+%    \begingroup\small%
+%    \colorlet{shadecolor}{rationalebg}%
+%    \begin{shaded}%
+%    \begin{list}{}{%
+%        \setlength{\topsep}{0pt}%
+%        \setlength{\leftmargin}{3em}%
+%        \setlength{\rightmargin}{0pt}%
+%        \setlength{\listparindent}{\parindent}%
+%        \setlength{\itemindent}{\parindent}%
+%        \setlength{\parsep}{\parskip}%
+%    }%
+%    \item[]}{\end{list}\end{shaded}\endgroup}
+\newenvironment{rationale}{%
+    \begingroup\small%
+    \begin{mdframed}[hidealllines=true,backgroundcolor=rationalebg,leftmargin=3em]}{\end{mdframed}\endgroup}
+
+\title{\textsf{\textbf{The T1 Programming Language}}}
+\author{Thomas Pornin}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+\noindent This document describes the design of the T1 programming
+language. It is intended to serve both as a specification of the core
+language features, and a rationale for the design decisions.
+
+\vspace{2ex}
+\noindent T1 is an imperative language that offers memory safety,
+generic metaprogramming, strong static typing through whole-program
+analysis, and support for object-oriented programming. It is geared
+toward efficient support of memory-constrained architecture, and in
+particular can be embedded as efficient co-routines with tight bounds
+on stack usage. Nevertheless, T1 aims at also being usable as a
+general purpose language.
+
+\vspace{2ex}
+\noindent \textbf{\textsf{WARNING:}} T1 is a work in progress, and the
+specification may be altered as implementation of the compiler unveils
+unforeseen difficulties or potential desirable feature changes.
+\end{abstract}
+
+\newpage
+\input{overview.tex}
+\newpage
+\input{lexer.tex}
+\newpage
+\input{names.tex}
+\newpage
+\input{types.tex}
+\newpage
+\input{functions.tex}
+\newpage
+\input{interpreter.tex}
+\newpage
+\input{compiler.tex}
+
+\end{document}

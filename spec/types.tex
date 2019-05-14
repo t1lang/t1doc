@@ -1,0 +1,769 @@
+\section{Types}\label{types}
+
+All T1 values are \emph{references} to \emph{instances}. This includes
+the basic types (booleans, small integers...). Formally, a value for the
+integer ``5'' is considered to be a reference to an immutable object
+instance that represents that integer; such instances are virtual and
+cannot be really created in memory. This definition allows us to define
+the T1 type system without making special cases for such basic types. In
+practice, there are some restrictions in compiled code that avoid type
+punning that would be expensive to implement.
+
+\subsection{Sub-Typing}
+
+\emph{Sub-typing} is a mechanism which incarnates promises of
+functionality. When type \verb|bar| is a sub-type of \verb|foo|, then it
+means that whenever a function expects as argument a reference to an
+object of type \verb|foo|, it may receive instead a reference to an
+object of type \verb|bar|, and things ``should work''. As we shall see
+later on, the only thing that can be made with values is to call
+functions on them, and function calls are dynamically mapped based on
+the runtime types of their arguments; thus, making \verb|bar| a sub-type
+of \verb|foo| means that for every function that takes as input a
+\verb|foo|, a function of the same name that accepts a \verb|bar| is
+defined.
+
+Whether such promises are fulfilled or not does not impact sub-typing.
+During interpretation, an unfulfilled promise will trigger a runtime
+error at the time the function is called. The compiler statically checks
+that such a situation does not occur; in that sense, the compiler does
+not check that there are methods for \verb|bar| that correspond to all
+methods for \verb|foo|, only that there are such methods for all calls
+that can actually occur in the compiled code.
+
+Sub-typing has the following rules:
+\begin{itemize}
+
+    \item Every type is considered to be a sub-type of itself. A
+    \emph{strict sub-type} of type ``\verb|T|'' is a sub-type of
+    ``\verb|T|'' that is not ``\verb|T|'' itself.
+
+    \item All types are sub-types of ``\verb|std::object|''.
+
+    \item Strict sub-typing is an acyclic graph. A given type is
+    a sub-type of itself, but shall not be a sub-type of any
+    strict sub-type of itself.
+
+    \item Sub-typing rules can be added to any type at any time,
+    provided that they don't create cycles. Basic types are an
+    exception, in that they cannot be sub-typed, or made strict
+    sub-types of any other types except ``\verb|std::object|''. Note
+    that sub-typing can be added even on types for which instances have
+    already been created.
+
+\end{itemize}
+
+Sub-typing is distinct from both embedding and extensions, which will be
+covered later on.
+
+If \verb|A| is a sub-type of \verb|B|, then \verb|B| is a \emph{super-type}
+of \verb|A|. A type can have several direct sub-types and several direct
+super-types. Sub-types and super-types are not ordered.
+
+\begin{rationale}
+Sub-typing is somewhat similar to interfaces in Java and C\#: a
+mechanism to tag types, and promise existence of methods, without
+actually implementing them. However, in both Java and C\#, such promises
+are checked by the compiler: a class that declares that it implements a
+given interface, but fails to provide the relevant methods, will be
+rejected at compilation. This does not occur in T1, which concentrates
+on actual usage: a compilation error is triggered not by failure of
+providing a method that matches a given sub-typing relationship, but
+by trying to call such a method.
+\end{rationale}
+
+\subsection{Basic Types}
+
+\emph{Basic types} are the following:
+\begin{itemize}
+
+    \item \verb|std::object| is the root of the sub-typing graph.
+    Instances of \verb|std::object| cannot be created. The basic
+    equality and inequality functions (``\verb|=|'' and ``\verb|<>|'')
+    are defined on \verb|std::object| and implement (in)equality of
+    references. Due to the way function lookups are performed, this
+    behaviour is inherited by all types, unless explicitly overridden.
+
+    \item \verb|std::bool| is the boolean type. The two possible values
+    are ``\verb|true|'' and ``\verb|false|''.
+
+    \item \verb|std::int| is the default integer type. It has a range
+    which depends on the current architecture and implementation, but
+    which is large enough to serve as index value in arrays. It is
+    signed: its range is $-m$ to $m-1$ for a given integer $m = 2^\ell$.
+    Operations on \verb|std::int| are checked; any overflow condition
+    triggers a runtime error.
+
+    \item \verb|std::u8|, \verb|std::u16|, \verb|std::u32| and
+    \verb|std::u64| implement unsigned integers modulo $2^8$, $2^{16}$,
+    $2^{32}$ and $2^{64}$, respectively. Since they are modular integers,
+    they have ``wrap-around'' semantics, and never overflow.
+
+    \item \verb|std::i8|, \verb|std::i16|, \verb|std::i32| and
+    \verb|std::i64| are the signed types corresponding to the unsigned
+    modular types. For instance, \verb|std::i8| is for integers in the
+    $-128$ to $127$ range. They implement wrap-around semantics, just
+    like unsigned types; like Java and unlike C, computations on signed
+    types that exceed the range yield well-defined results.
+
+\end{itemize}
+
+\emph{There are no automatic conversions.} Contrary to C, no value can
+be used as a boolean, except the values of type \verb|std::bool|.
+Arithmetic operations such as addition cannot involve distinct types;
+e.g. you cannot add a \verb|u8| to a \verb|u16|. Conversion functions
+are provided. In C and C++, many automatic conversions are applied; in
+Java and C\#, only widening conversions (that conserve the mathematical
+value) are implicit. In T1, all conversions must be explicit: this is
+meant to force the developer to have a clear mental picture of what
+happens to the data.
+
+\begin{rationale}
+For the default integer type, typically used for indexing into arrays,
+the following language designs (at least) are possible:
+\begin{itemize}
+
+    \item Use a native type of the architecture, with wrap-around
+    semantics. This is what Rust does with the \verb|isize| and
+    \verb|usize| types. In C, there is an unsigned integer type which
+    is what \verb|sizeof| returns and \verb|memcpy()| expects; the
+    standard headers give it the name ``\verb|size_t|''.
+
+    \item Use a type with a defined, fixed width, typically 32 bits.
+    This is the Java road, with \verb|int|. This implies some
+    limitations when machine memory sizes have grown so much that
+    indexes beyond $2^{31}$ are no longer ridiculous. In C\#, some
+    extensive contorsions were made to allow indexing with both
+    \verb|int| and \verb|long|.
+
+    \item Transparently expand integers into \emph{big integers} with
+    unlimited range, bounded only by the RAM required to represent such
+    values. Python uses this strategy; it is also encountered in many
+    Scheme implementations. Computations on small integer values can
+    be done without dynamic allocation, but large integer values incur
+    some performance loss.
+
+    \item Use a type with a defined range (that may depend on the
+    architecture) but detect overflows and transform them into actual
+    errors. This is reminiscent of Ada.
+
+    \item Make something weird like JavaScript: there are no integers,
+    only floating point values. When going out of range, values become
+    approximate.
+
+\end{itemize}
+
+T1 follows the Ada way for several reasons:
+\begin{itemize}
+
+    \item Wrap-around semantics, or the C ``undefined behaviour'' when
+    exceeding range on a signed type, make for devious bugs which are
+    often security issues. Secure code must often include extensive
+    analysis and explicit checks to make sure that overflows don't occur;
+    it is safer to make all checks by default, and possibly suppress
+    them when the compiler can be convinced that no overflow occurs. We
+    may say that integer overflow checks are needed in the same way as
+    bounds checking is needed for array accesses.
+
+    \item A fixed-width type is too limiting; e.g. a 32-bit type is
+    too expensive for small 16-bit microcontrollers, and yet not large
+    enough for large 64-bit systems.
+
+    \item Big integers are seductive but incur some extra costs; in
+    particular, some form of dynamic memory allocation is needed, and
+    this goes contrary to the strict RAM discipline and memory safety
+    that T1 strives to achieve. Moreover, big integers cannot be
+    implemented in constant-time.
+
+\end{itemize}
+
+T1 implementations may use a slightly smaller range than expected. For
+instance, on a 32-bit architecture, \verb|std::int| values may have a
+range limited to $-2^{30}$ to $2^{30}-1$, i.e. 31 bits with signed
+interpretation, not 32 bits. This is done in order to allow an in-memory
+representation that is compatible with pointers: pointers to instances
+are normally aligned, hence use even 32-bit values; thus, integers can
+be represented as odd values, the least significant bit being used to
+mark the value as an integer. That kind of trick is common in Scheme and
+OCaml implementations; it allows storing integers in pointer fields in a
+way which works well with runtime type checks and garbage collection.
+\end{rationale}
+
+\subsection{Strings}
+
+There is no dedicated ``character string'' type. Strings are arrays of
+bytes. Literal strings define statically allocated arrays of bytes. The
+name ``\verb|string|'' is provided as an alias for the name of the type
+for an array of bytes (which is ``\verb|(std::u8 std::array)|'', as
+will be described later on).
+
+\begin{rationale}
+In C, there are no real character strings, only arrays of \verb|char|
+with a terminating zero. T1 does not need or use a terminating zero,
+because its arrays have a definite length accessible at runtime.
+
+In the infancy of computers, ``characters'' were believed to be simple,
+atomic elements that could be represented with a simple, small,
+fixed-width type, e.g. ``\verb|char|'' in the C language. It soon
+appeared that different languages required more characters, and ``code
+pages'' were invented to incarnate the interpretation of bytes into
+characters. Code pages implied huge interoperability issues, and the
+problems were made much worse when non-alphabetic scripts such as
+Japanese had to be taken into account.
+
+Unicode is a unifying effort that tries to remove the need for code
+pages. Unicode defines \emph{code points}; initially, each code point
+was a 16-bit integer, but this proved too limited, and code points can
+now use up to 22 bits (valid code point values are in the 0 to 0x10FFFD
+range). Java defined its \verb|String| type to be a sequence of
+\verb|char| values, a 16-bit type, as per the first version of Unicode.
+A more modern redefinition would use a 32-bit integer type, so as to
+represent the whole range of possible code points.
+
+This is, however, an illusion. Unicode defines code points, not
+``characters''. Consider for instance the English word ``café'' (an
+import from French, but still a valid English word); the last character
+(``é'') admits two representations in Unicode. The first one is a single
+code point \verb|U+00E9| (``latin small letter E with acute''); the
+other one is a sequence of two code points, \verb|U+0061| (``latin small
+letter E'') followed by \verb|U+0301| (``combining acute accent'').
+Thus, a single ``character'' may consist of several code points. A lot
+of combinations are possible (in particular in Hangul, the Korean
+writing system) and it would not be practical to map all of them into a
+single numerical type. Therefore, any sufficiently advanced
+Unicode-aware processing of text must be able to accomodate
+variable-length representations of characters.
+
+A simpler model is represented by Go: strings are just bytes. When the
+bytes must be parsed as text, then they are decoded as per UTF-8 rules.
+UTF-8 has some nice properties:
+\begin{itemize}
+
+    \item Every ASCII character is encoded as a single byte whose value
+    matches the ASCII code of the character. For instance, the ASCII
+    code of ``e'' is 0x61, and it is encoded as a single byte of value
+    0x61. Thus, ASCII is ``preserved'' by UTF-8 encoding.
+
+    \item All other code points are encoded as sequences of bytes
+    with values no less than 0x80; none of these bytes may be
+    misinterpreted as an ASCII character.
+
+\end{itemize}
+Using UTF-8 means that technical processing, in particular for
+text-based protocols such as HTTP, can use the traditional
+one-character-per-byte model, provided that the processing uses only
+ASCII characters, and bytes with values 0x80 or more are just kept
+together. This has the additional benefit of not \emph{enforcing} UTF-8
+encoding; this is handy when, for instance, exploring file directories,
+where file names are OS-provided sequences of bytes which need not be
+valid UTF-8.
+
+T1 follows the Go way and uses byte arrays for strings.
+\end{rationale}
+
+Functions that use and return strings assume immutability: a string
+instance should never change once initialized. However, T1 does not
+enforce this property: when an array of bytes is used as a string, it is
+up to the developer to refrain from modifying its contents as long as it
+is used elsewhere with immutability semantics.
+
+The T1 \emph{compiler} enforces immutability of all statically allocated
+instances, and this includes the instances corresponding to literal
+strings.
+
+\begin{rationale}
+Enforced immutability would make programming ``safer'' at the expense
+of extra allocations. For instance, if bytes are read from a network
+interface, then these bytes are written into a buffer. To interpret that
+buffer as an immutable string, there are several options:
+\begin{itemize}
+
+    \item Copy the bytes into a newly allocated read-only object. This
+    is what is done in Go when a ``\verb|[]byte|'' value is cast into
+    a ``\verb|string|''. Such a mechanism requires dynamic allocation.
+
+    \item ``Lock'' the buffer with a flag checked at runtime for each
+    write access. This requires room for that extra flag, and, indeed,
+    runtime checks, which may have a non-negligible cost. Unlocking
+    would have to be performed as well. Also, any error will be reported
+    only at runtime, which is undesirable in general (compile-time error
+    reporting is much preferred).
+
+    \item Use complex borrowing semantics to ensure that concurrent
+    modifications don't occur. This is what Rust does, with far-reaching
+    consequences on the application structure (what is deemed by the
+    colloquial euphemism ``fighting the borrower'').
+
+    \item Don't do anything; just \emph{document} that a given string,
+    when provided to a function, may be retained and used after that
+    function has returned, and therefore must not be modified.
+
+\end{itemize}
+T1 follows the last of these options, based on my own development
+experience: I don't tend to make bugs related to immutability confusion,
+and thus the enforced extra safety does not seem to be worth the extra
+costs for that property. This is a personal judgement call, and I
+might add a truly immutable string type in a later version.
+\end{rationale}
+
+\subsection{Structures}
+
+New types are built as \emph{structures}. A structure contains
+\emph{fields} and \emph{embedded sub-structures}. A field contains a
+value (i.e. a reference); an embedded sub-structure is an instance of
+another type, which is created along with the encapsulating instance.
+Though implementations may vary, the intended effect is that fields
+appear in the memory layout in the order they appear in the structure,
+and embedded sub-structures are really embedded, i.e. use for their own
+memory layout the corresponding chunk of memory of the encapsulating
+structure.
+
+Each field has a type, which is a filter on possible values of the
+field: these values must have types which are sub-types of the field
+type. This is a side-effect; the primary function of the field type is
+to qualify the declaration of accessor functions for that type. Embedded
+structures also have a type, which defines which structure is embedded.
+Only other structures may be embedded; it is not possible to embed basic
+types (and it would not make much sense either). Embedding is acyclic: a
+structure may not directly or indirectly embed itself.
+
+Arrays of fields and arrays of embedded structures can be defined, with
+a fixed number of elements.
+
+Consider the following example. We suppose that the current namespace
+is ``\verb|def|'', and that the ``\verb|bar|'' type is defined, or
+to-be-defined, in that namespace.
+\begin{verbatim}
+    struct foo
+        x int
+        b1 bar
+        b2 && bar
+        c1 16 bar
+        c2 && 16 bar
+    end
+\end{verbatim}
+
+A structure named \verb|def::foo| is defined, with the following contents:
+\begin{itemize}
+
+    \item A field called \verb|def::x|, that may contain values of type
+    \verb|std::int| or sub-types thereof (but there cannot be strict
+    sub-types of \verb|std::int|). Note that the unqualified name
+    ``\verb|int|'' is converted by an active alias to ``\verb|std::int|'',
+    because that alias is part of the export list from the namespace
+    \verb|std|, which is imported by default.
+
+    \item A field called \verb|def::b1| for references to instances of
+    \verb|def::bar| (or sub-types thereof).
+
+    \item An embedded structure of type \verb|def::bar|, with name
+    \verb|def::b2|.
+
+    \item An embedded array of 16 references of type \verb|def::bar|,
+    with name \verb|def::c1|.
+
+    \item An embedded array of 16 embedded sub-structures of type 
+    \verb|def::bar|, with name \verb|def::c2|.
+
+\end{itemize}
+
+No two elements of a structure may have the same name, regardless of
+their respective kinds.
+
+\subsubsection{Closing}
+
+When first encountered, a structure type is created in an ``open''
+state. This means that its name becomes known, but the full contents are
+not yet defined. As long as a structure is open, new fields and embedded
+elements (sub-structures, arrays, and arrays of embedded sub-structures)
+can be added to the structure type. Once the type is \emph{closed}, no
+new contents may be added. In the example above, \verb|def::foo| is
+still open: new fields and embedded elements could still be added to the
+structure. The ``\verb|end|'' keyword does not close the structure; it
+merely exits the syntactic construction that is used to add elements to
+a structure.
+
+Similarly, the \verb|def::bar| structure, if not yet defined at this
+point of the source code, has been automatically created, in open state
+and with no initial contents, when the name ``\verb|def::bar|'' was
+first encountered (i.e. when the field \verb|def::b1| was
+defined).\footnote{Strictly speaking, the \texttt{\textbf{def::bar}}
+structure, if created at this point, is in \emph{implicit} open state;
+if it was not explicitly defined at the time \texttt{\textbf{def::foo}}
+is closed, then an error is reported, under the assumption that a type
+which was never explicitly defined anywhere is probably a typing
+mistake.}
+
+A structure will be closed in the following circumstances:
+\begin{itemize}
+
+    \item When closed explicitly with a specific function call on the
+    type instance (i.e. the instance of type ``\verb|std::type|'' that
+    represents this type).
+
+    \item When an instance of the structure is created. Instance creation
+    implies memory allocation, which needs the layout to be fixed.
+
+    \item When an encapsulating structure is closed. For a structure to
+    be closed, all the structures it embeds must first be closed. Since
+    the embedding relationship is acyclic, this process converges.
+
+    \item When the structure is made part of code being compiled.
+
+\end{itemize}
+
+Conversely, sub-types and super-types can be added to a closed
+structure; that is, even after \verb|def::foo| is closed, new structures
+can be defined and made sub-types of \verb|def::foo|, and
+\verb|def::foo| itself can be made sub-types of other structures; these
+additions are immediately inherited by existing instances of
+\verb|def::foo|.
+
+\subsubsection{Instantiation}
+
+When a structure type \verb|T| is defined, a function with the same name
+is created. That function takes no parameter, and returns an instance of
+\verb|std::type| which represents the type \verb|T|.
+
+A dedicated function \verb|std::new| takes as parameter a
+\verb|std::type| instance, and creates a new instance of the represented
+type. The fields of the new instance are set to uninitialized state
+(except fields of boolean or modular integer types, which are set to
+their default \verb|false| or zero values); this also applies,
+recursively, to all embedded elements.
+
+Calling \verb|std::new| on \verb|std::type| instances that do not
+represent structure types triggers an exception.
+
+\subsubsection{Accessors}
+
+Structure contents can only be inspected and altered through dedicated
+\emph{accessor functions}. These special functions are created when the
+structure is closed. The accessors use the element names, depending on
+the kind of element:
+\begin{itemize}
+
+    \item For a field of name \verb|def::x|, the functions \verb|def::x|
+    and \verb|def::->x| are defined, to read and write values to the
+    field \verb|def::x| of an instance, respectively. The accessor
+    \verb|def::Z->x| clears the field, i.e. sets it to uninitialized
+    state. The accessor \verb|def::x?| tests whether the field is
+    initialized or not.
+
+    \item For an embedded structure of name \verb|def::x|, one accessor
+    function of name \verb|def::x&| is defined, which takes as input
+    a reference to an instance of the encapsulating structure, and returns
+    a reference to the instance embedded within it.
+
+    \item For an array of references, with name \verb|def::x|, the
+    functions \verb|def::x@| and \verb|def::->x@| read and write values
+    into the array slot indexed by a given \verb|std::int| value.
+    Also, \verb|def::Z->x@| clears a slot, and \verb|def::x@?| tests
+    its initialization status. Finally, \verb|def::x*| initializes an
+    array instance (of the right type) to provide an array view of the
+    references.
+
+    \item For an array of embedded sub-structures, with name \verb|def::x|,
+    the \verb|def::x@&| accessor returns a reference to one of the
+    embedded sub-structures, by \verb|std::int| index, and \verb|def::x*|
+    initializes an array view of the sub-structures.
+
+\end{itemize}
+
+Fields, and slots in embedded arrays of references, are initially
+uninitialized. There is no null value; reading an uninitialized field
+triggers a runtime error.
+
+For booleans and modular integers, i.e. the \verb|std::iXX| and
+\verb|std::uXX| types, corresponding fields are always initialized.
+Their starting value is \verb|false| (for booleans) or zero (for modular
+integers), and the clearing accessors restore that value. The test
+accessors (\verb|def::x?|, \verb|def::x@?|) then always return
+\verb|true|. Note that plain \verb|std::int| fields are not in this
+situation, and can be truly uninitialized.
+
+\subsubsection{Extension}
+
+A structure may \emph{extend} another structure; this is a combination
+of sub-typing and embedding. When structure \verb|B| extends the
+structure \verb|A|:
+\begin{itemize}
+
+    \item \verb|B| is defined to be a sub-type of \verb|A|.
+
+    \item \verb|B| embeds an instance of \verb|A|, under the name of
+    \verb|A| (that is, the accessor \verb|A&| is defined, that takes
+    as input parameter a reference to an instance of \verb|B|, and
+    returns a reference to the embedded instance of \verb|A|).
+
+    \item Accessors for elements of \verb|A| can be used on an
+    instance of \verb|B|, and will access the corresponding elements
+    in the instance of \verb|A| which is embedded in \verb|B|.
+
+\end{itemize}
+
+Since extension is both embedding and sub-typing, it combines the
+requirements of both; notably, extension cannot be done in a closed
+structure, and the extension relationship is acyclic.
+
+A given structure \verb|B| may directly extend a given structure
+\verb|A| only once (this is implied by the fact that the extended
+structure is embedded under its own name, and names are unique within
+structure contents). However, a structure may extend several other
+structures. This is a multiple inheritance model, which is powerful but
+implies some ambiguous situations. Suppose, for instance, that:
+\begin{itemize}
+
+    \item Structure \verb|A| has a field named \verb|x|.
+
+    \item Structure \verb|B| extends \verb|A|.
+
+    \item Structure \verb|C| extends \verb|A|.
+
+    \item Structure \verb|D| extends \verb|B| and \verb|C|.
+
+\end{itemize}
+In that situation, the \verb|x| function, which is the read accessor for
+the field of the same name in \verb|A|, could be invoked on an instance
+of \verb|B| and on an instance of \verb|C|. Since \verb|D| extends
+\verb|B|, the accessors that accept an instance of \verb|B| will also
+work on an instance of \verb|D|. However, the same can be said about the
+accessors that accept an instance of \verb|C|. In fact, since \verb|D|
+embeds both a \verb|B| and a \verb|C|, and each embeds an \verb|A|, the
+structure \verb|D| indirectly embeds \emph{two} instances of \verb|A|,
+and it is unclear which one is supposed to be used when reading the
+field \verb|x|. Therefore, invoking \verb|x| on an instance of \verb|D|
+triggers an error.\footnote{As we shall see, part of the work of the
+compiler is to prove that such an error cannot happen in a given piece
+of code.}
+
+It is possible to make an explicit decision, by defining a function
+called \verb|x|, attached to type \verb|D|, which then selects the
+instance to use:
+\begin{verbatim}
+    : x (D) B& x ;
+\end{verbatim}
+This snippet reads as follows:
+\begin{itemize}
+
+    \item The ``\verb|:|'' token starts the definition of a new function.
+    It is followed by the name of that function (\verb|x|).
+
+    \item The ``\verb|(D)|'' expression registers the new function to
+    the type ``\verb|D|''; that is, if a function call for name \verb|x|
+    is encountered, and at that time the top element on the stack has
+    type \verb|D|, then this function shall be called (and not, in
+    particular, the accessor function which is registered on type
+    \verb|A|).
+
+    \item Afterwards follows the function body, which here consists in two
+    successive function calls: \verb|B&|, which returns a reference to the
+    sub-structure embedded in \verb|D| under the name \verb|B|, and then
+    \verb|x|. Since that \verb|x| call will operate on the \verb|B|
+    instance returned by \verb|B&|, it will use the \verb|A| instance
+    embedded in that \verb|B| instance, and not the one embedded in the
+    \verb|C| instance which is also embedded in \verb|D|.
+
+    \item The semicolon token (``\verb|;|'') terminates the function body.
+
+\end{itemize}
+Thus, this new function explicitly chooses \verb|B|, not \verb|C|. Since
+it is registered with type \verb|D|, which is a sub-type of \verb|A|, it
+will have precedence over the \verb|x| accessor function defined on
+\verb|A|, when invoked over an instance of \verb|D|.
+
+\begin{rationale}
+Type extension in T1 maps to the Java extension of classes, while
+sub-typing corresponds to the Java extension of interfaces. Historically,
+Java had only classes, and interfaces were added afterwards to compensate
+for the lack of multiple inheritance. The Java inheritance has several
+facets:
+\begin{itemize}
+
+    \item Inheritance of storage: state held in the superclass is also
+    contained in the subclass instance. In T1, this is done with extension.
+
+    \item Inheritance of behaviour: methods attached on the superclass
+    also work with subclasses. This is what sub-typing provides in T1.
+
+\end{itemize}
+\end{rationale}
+
+\subsection{Arrays}
+
+Array types are defined on-demand. For a given type \verb|T|, the type
+``array of \verb|T|'' has the name:
+\begin{verbatim}
+    (T std::array)
+\end{verbatim}
+(including the parentheses). This name is not a name token, as returned
+by the lexer; however, as will be explained in the description of the
+interpreter, the array type name mimics a sequence of code that, when
+processed by the interpreter, yields a reference to the \verb|std::type|
+instance that represents the array type. In fact, the \verb|std::array|
+function \emph{creates} the array type if it does not already exist, and
+registers all accessor functions for array instances.
+
+Array instances really are \emph{views} on a chunk of memory. An
+instance of the array type, when instantiated but not initialized,
+points to nothing, and calling data accessors triggers an exception.
+An array instance is populated in basically four ways:
+\begin{itemize}
+
+    \item Make the array instance point to a sequence of values or
+    embedded structures within a given structure instance. If the
+    sequence of values or embedded structures was declared with the name
+    \verb|def::x|, then this is done with the \verb|def::x*| accessor
+    function.
+
+    \item Make the array instance point to a locally allocated sequence
+    of values or embedded structures. For a local name \verb|x|, this is
+    done by using the \verb|x*| pseudo-function name.
+
+    \item Dynamically allocate a new memory chunk, with a specified
+    length. When dynamic memory allocation is supported, this is done
+    with the \verb|std::make| function.
+
+    \item Initialize the array instance as a sub-array of another array
+    instance. The sub-array must be entirely contained within the source
+    array. This is done with the \verb|std::sub| function. An array
+    instance can be reinitialized as a sub-array of itself with
+    \verb|std::subself| (which is just a shorthand for \verb|std::sub|
+    with the instance used for both operands).
+
+\end{itemize}
+
+There is thus always an indirection layer when accessing memory chunks.
+Memory chunks themselves are not objects, i.e. they cannot be accessed
+directly, and do not have a T1 type. Native code called from T1 can
+obtain a direct pointer to the data, subject to some caveats (in
+particular, objects may be moved in memory by the garbage collector, if
+used; and locally allocated objects cease to exist when the owner
+function returns): T1 memory safety guarantees that all array accesses
+are ``safe'' (e.g. out-of-bounds accesses trigger a runtime error, and
+all reachable objects are maintained in memory to avoid dangling
+pointers), but native code can bypass such safety features.
+
+\begin{rationale}
+The Go language has \emph{arrays} and \emph{slices}. An array is a
+sequence of value, and a slice is a view on such a sequence. Most
+operations that work on arrays also work on slices. In T1, the Go arrays
+become ``chunks of memory'' and are not directly accessible; the T1
+``arrays'' are equivalent to the Go slices.
+
+Thus, a T1 array type can be thought of as a structure with three
+fields: pointer to the actual object that contains the data, offset and
+length of the chunk within that hidden object. There is no notion of
+``capacity'' as in Go (T1 arrays are not intrinsically growable).
+\end{rationale}
+
+An ``array of \verb|T|'' is an array of references (to elements of type
+\verb|T|, or sub-types thereof). A newly created memory chunk will have
+all slots uninitialized (or set to \verb|false| or zero, for booleans
+and modular integers). The following accessor functions are defined:
+\begin{itemize}
+
+    \item \verb|std::make| dynamically allocates a new memory chunk,
+    and initializes the array instance to point to that chunk.
+
+    \item \verb|std::sub| initializes an array as a view of a chunk of
+    another array. The source array must have been initialized.
+
+    \item \verb|std::subself| merely duplicates the argument, then calls
+    \verb|std::sub|.
+
+    \item \verb|std::init?| returns \verb|true| if the array instance
+    was initialized, \verb|false| otherwise. If the array instance was
+    not initialized, then calls to the other functions below will
+    trigger a runtime error.
+
+    \item \verb|std::length| returns the length of the array (number of
+    elements).
+
+    \item \verb|std::@| and \verb|std::->@| read and write a value from
+    an array slot or to an array slot, respectively, indexed by an
+    \verb|std::int| value. Array indexes start at zero.
+
+    \item \verb|std::Z->@| clears an array slot, and \verb|std::@?|
+    returns its initialization status. For an array of booleans or
+    modular integers, clearing a slot means setting it to \verb|false|
+    or zero, and \verb|std::@?| always returns \verb|true|.
+
+\end{itemize}
+
+Types for arrays of embedded structures can also be obtained with
+\verb|std::array&|. The expression:
+\begin{verbatim}
+    (T std::array&)
+\end{verbatim}
+will return an array type that, when instantiated and initialized, is
+a view to a sequence of contiguously allocated instances of \verb|T|.
+For such an array, the accessors that use or return references
+(\verb|std::@|, \verb|std::->@|, \verb|std::Z->@| and \verb|std::@?|)
+are not defined; instead, the accessor \verb|std::@&| returns a
+reference to one of the structures embedded in the array.
+
+Any other type can present an array-like interface by defining the
+appropriate methods. It shall be noted that support for the
+\verb|std::sub| function implies that any array-like type must
+be able to present some of its contents in a contiguous sequence in
+memory.
+
+\begin{rationale}
+The main idea behind arrays-as-views is to make it so that any function
+that can work on arrays will also work on a sub-array. In practical Java
+or C\# code that processes binary data (e.g. I/O code), several methods
+are often needed, e.g. a \verb|write()| that takes as parameter an array
+of bytes, and another \verb|write()| method that takes as parameters an
+array of bytes, a start offset and a length. Array views are meant to
+avoid these multiple methods. Moreover, they allow user-defined types
+with array-like interfaces to be used instead (e.g. a growable vector of
+bytes).
+\end{rationale}
+
+\subsection{Generics}
+
+The on-demand creation of array types is an example of how generic types
+are managed in T1. In full generality, container types are meant to be
+created with metaprogramming. For instance, growable array types are
+created with \verb|std::list|. The following sequence of code:
+\begin{verbatim}
+    (u8 list)
+\end{verbatim}
+will return an \verb|std::type| instance that represents growable arrays
+of bytes. This is a normal structure type (albeit with a name that is
+not a qualified name token), and the \verb|new| function on that type
+instance will return a new growable array of bytes with an initial size
+of zero. Each growable array type is a sub-type of the corresponding
+array type, and offers the relevant accessor functions, as well as some
+extra functions to append or remove elements.
+
+Syntactic facilities are made available to users, in order to define
+their own generic types. This is not restricted to making new types
+parametrized by other types; this is more an expression that source code
+can define functions and invoke them during the interpretation itself,
+to process further source code and define other functions in arbitrary
+ways.
+
+\begin{rationale}
+In Java, an important point of generics is that they impact the type
+analysis, but do not create new types: \verb|ArrayList<String>| and
+\verb|ArrayList<Date>| both use the same \verb|Class| instance (their
+respective \verb|getClass()| methods return the same object), and cannot
+be distinguished from each other at runtime. This is an historical
+consequence of generics being added only relatively late in the language
+(for Java 5). The generics are handled as an extra layer at compile-time
+that is used to avoid having the developer make explicit casts and risk
+the dreaded \verb|ClassCastException|.
+
+Conversely, in C\#, \verb|List<string>| and \verb|List<DateTime>| are
+distinct types with distinct runtime \verb|Type| instances (as returned
+by \verb|GetType()|). The C\# compiler analyzes the source code to make
+sure that, when replacing the type parameters with actual types (that
+comply with the expressed restrictions on the type parameters), the
+resulting code will still be valid; but the runtime machine will create
+as many distinct types as necessary. T1 works similary to C\#, minus the
+initial abstract analysis: in T1, we do not really care whether things
+\emph{would} work with some large categories of types, but whether they
+\emph{will} work with the types that the source code actually uses.
+\end{rationale}

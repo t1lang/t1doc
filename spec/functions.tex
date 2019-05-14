@@ -1,0 +1,192 @@
+\section{Functions}
+
+Every piece of code in T1 is a \emph{function}. A function has a name
+(which is a character string) and is \emph{registered}; the registration
+is what makes the function callable. Several functions may have the same
+name, but will then differ by the types under which they are registered.
+
+\subsection{Runtime Model}
+
+Function parameters, and returned values, are exchanged on a
+\emph{stack}. The stack contains only values, which are references.
+Every function extracts the parameters it needs from the stack, and
+pushes back its returned values on the stack. This inherently allows
+functions to return several values.
+
+A function, when invoked, has an \emph{activation context}, which is
+traditionally called a \emph{stack frame}. This is disjoint from the
+stack described above. Implementations may use a stack structure to
+allocate activation contexts; in that case, that stack structure is
+often called the ``system stack'', while the normal stack for values is
+called the ``data stack''. Here, we will strive the avoid the confusion
+by using the expression ``activation context'', and reserving the term
+``stack'' for the data stack.
+
+The activation context is a transient memory area that will contain the
+local variables for the function, and may save the current execution
+point for the function. When a function calls another function, the
+current instruction pointer is saved in the function activation context,
+and a new activation context is created for the called function; when
+that called function returns, its activation context is released, and
+the instruction pointer is restored from the activation context of the
+caller. Exactly how this happens is an implementation detail.
+
+Local variables are slots that can receive values; during translation of
+the source code, local variables have names, which allows source code to
+issue read and write instructions for these variables.
+
+\begin{rationale}
+In Forth, the system stack is explicit, with words \verb|R>| and
+\verb|>R| to move values from the system to the data stack, and back.
+Since some tasks may require more complicated data movements (the usual
+example is adding tridimensional vectors together), Forth also defines
+local variables, which are usually located on the system stack. Local
+variable names are translated at compilation time into depths on the
+system stack, which means that local variables don't interact well, or
+at all, with facilities that access the system stack, such as explicit
+words (\verb|R>| and its ilk...), or loop counters. Thus, a function
+may use the system stack explicitly, \emph{or} use local variables,
+but should not try to mix both.
+
+For T1, which is not encumbered by compatibility with existing legacy
+code, it seems simpler to avoid the complications and normalize on a
+single system. Thus, local variables have been chosen, and the system
+stack is not made visible to user code, except as the ``activation
+context'' abstraction.
+\end{rationale}
+
+\emph{Locally allocated instances} are an extension of local variables:
+these are object instances that are part of the activation context. This
+corresponds to automatic variables in C or C++; arrays of references or
+embedded structures can be obtained that way. These locally allocated
+instances are nominally destroyed when the owner function exits. T1 does
+not have destructors (in the C++ sense) or finalizers (in the Java
+sense), thus the notion of ``destruction'' really means memory
+deallocation. During interpretation, the garbage collector is used for
+such instances, meaning that local allocation is not different from
+normal heap allocation. In compiled code, allocation is really done in
+the activation context, and has some restrictions so that memory safety
+is maintained in all its facets (notably guaranteed maximum stack
+growth): the size of such instances must be known at compile-time, and
+instances shall not ``escape'' to outer contexts, i.e. remain reachable
+once the owner function has returned.
+
+\begin{rationale}
+A typical use for stack allocation is creation of an array view instance
+to designate a chunk of an array provided by a calling function, for
+purposes of using that new array view instance as parameter to another
+nested function. Such operations should be doable even when compiling
+for targets that do not support dynamic memory allocation. Another use
+is assembly of a small character string, e.g. for immediate display.
+\end{rationale}
+
+\subsection{Function Invocation}
+
+The only way to invoke a function is by name. Function names may be
+arbitrary; syntactically, a name token is used, and unqualified names
+are translated to qualified names by the parser, thus most function
+calls should use qualified names.
+
+To be callable, a function must be \emph{registered}. A function
+registration includes its name, and parameter types. For instance,
+this code defines and registers a function:
+\begin{verbatim}
+    : foo (int string)
+        # Here goes the function body
+\end{verbatim}
+If the current namespace is \verb|def|, then the function is registered
+under the name \verb|def::foo| and with two parameter types,
+\verb|std::int| and \verb|std::string|. The intent is that if some code
+calls the function ``\verb|def::foo|'', and at that exact time, the
+runtime types of the top two stack elements are \verb|std::int| and
+\verb|std:string|, respectively, then the function defined above shall
+be the one to be called. Types are provided in ``stack order'', i.e.
+the rightmost element is the top-of-stack.
+
+The function invocation process works in the following way:
+\begin{itemize}
+
+    \item The function invocation uses a specific name; only functions
+    registered under that exact name are considered.
+
+    \item A set of all \emph{matching functions} is defined: these are
+    all the functions (with the correct invocation name) for which the
+    registered parameter types match the runtime types of the
+    corresponding stack elements at call time. E.g. in the example
+    above, that function \verb|def::foo| is a matching function if and
+    only if the top stack element has type \verb|std::string| or a
+    sub-type thereof, and the stack element immediately below has type
+    \verb|std::int| or a sub-type thereof.\footnote{In that specific
+    case, \texttt{\textbf{std::int}} cannot have sub-types, but
+    \texttt{\textbf{std::string}} can.}
+
+    \item The matching functions are ordered by \emph{precision}. Let
+    $f$ be a function registered with parameter types $r_m, r_{m-1},...
+    r_1$ (in stack order, $r_1$ is top-of-stack), and $g$ be a function
+    registered with parameter types $s_n, s_{n-1},... s_1$. $f$ will be
+    said to be \emph{more precise} than $g$ if and only if all of the
+    following hold:
+    \begin{itemize}
+
+        \item $m \ge n$ (i.e. $f$ is registered with at least as many
+        parameter types as $g$)
+
+        \item For all $1\le i\le n$, type $r_i$ is a sub-type of $s_i$.
+
+    \end{itemize}
+
+    \item If one of the matching functions is more precise than all other
+    matching functions, then that function is called. Otherwise, an
+    error occurs.
+
+\end{itemize}
+
+The following important points must be noticed:
+\begin{itemize}
+
+    \item Precision order is partial. Two given functions are not
+    necessarily comparable, i.e. neither being ``more precise'' than
+    the other. The invocation process does not require that all matching
+    functions be comparable to each other, but that one can be compared
+    to all others, and found to be more precise than all others.
+
+    \item A failure will be reported if there is no matching function,
+    but also if there are several and none is more precise than all the
+    others.
+
+    \item Since sub-typing is acyclic (except that every type is deemed
+    to be a sub-type of itself), the only way for two functions $f$ and
+    $g$ to be such that $f$ is more precise than $g$ and $g$ is more
+    precise than $f$ at the same time, is to have $f$ and $g$ registered
+    with the exact same parameter types. This situation is explicitly
+    forbidden: any attempt at registering a function with the same name
+    and parameter types as an already registered function triggers an
+    error.
+
+    \item If a function is registered with $n$ parameter types, and the
+    stack contains fewer than $n$ elements at call time, then that
+    function is not a matching function.
+
+    \item The parameter types used for registration do not necessarily
+    exhaust all the actual function parameters. A function registered
+    with two parameter types may use more than two parameters. Moreover,
+    registration says nothing about how the number and types of values a
+    function may return (i.e. leave on the stack when exiting).
+
+\end{itemize}
+
+This process works best when registered functions use the same patterns.
+For instance, it is expected that most functions in a given application
+will work like ordinary methods as in classic OOP, i.e. be dispatched
+based on the type of a single parameter, which will be ``the object on
+which the method is invoked''. To allow functions to be used without
+undue collisions, even if the same names are used, it is best if all
+such method-like functions are registered such that the owner object is
+the top-of-stack (i.e. rightmost parameter in the list).
+
+\subsection{Immediate Functions}
+
+An \emph{immediate function} is a function which is registered with no
+parameter types, and a special ``immediate'' flag. The role of immediate
+functions is to be invoked as soon as they are encountered in the source
+code, during interpretation; this is how additional syntax is defined.
